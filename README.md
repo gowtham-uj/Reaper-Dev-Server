@@ -1,6 +1,9 @@
 # Reaper V2
 
-Reaper is a self-hosted browser workspace for durable project files, isolated project runtimes, and persistent terminal sessions.
+A self-hosted dev server for the agentic era — one durable Linux pod per
+project, persistent terminals, scoped tokens, and authenticated published
+ports. Files, env, and shells survive browser restarts, network drops, and
+backend redeploys.
 
 ## Runtime architecture
 
