@@ -8,8 +8,10 @@ backend redeploys.
 ## UI tour
 
 The screenshots below come from a reference deployment of Reaper V2. The
-demo project shown is named `sample-app`; replace it with your own project
-name in practice. Nothing in the tour reflects private workspace contents.
+demo projects shown in the projects grid are `nova_sentinel`, `orion_builder`,
+and `zephyr_lab`; the per-project screens below were captured against a
+reference project named `sample-app`. None of these reflect any real
+workspace contents.
 
 ### Login
 
@@ -24,9 +26,9 @@ the operator creates the first admin by setting `APP_ADMIN_USERNAME` and
 ![Reaper V2 projects grid](docs/screenshots/02-projects.png)
 
 Every workspace directory under `/app/workspace` is a project. Each card
-links to Files, Terminal, and Settings. The three top-left cards in this
-screenshot have been redacted for the public README; the lone populated
-card on the bottom-right is the `sample-app` reference project.
+links to Files, Terminal, and Settings. The three cards here are example
+demo projects (`nova_sentinel`, `orion_builder`, `zephyr_lab`) that exist
+only for this screenshot and are not connected to any real workspace.
 
 ### Project terminal
 
