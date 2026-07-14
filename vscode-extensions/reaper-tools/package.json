@@ -1,0 +1,40 @@
+{
+  "name": "reaper-tools",
+  "displayName": "Reaper Tools",
+  "publisher": "reaper",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onView:reaper.monitorView",
+    "onView:reaper.sshView",
+    "onView:reaper.terminalSessionsView"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "reaper",
+          "title": "Reaper",
+          "icon": "media/reaper.svg"
+        }
+      ]
+    },
+    "views": {
+      "reaper": [
+        {
+          "type": "webview",
+          "id": "reaper.monitorView",
+          "name": "System Monitor"
+        },
+        {
+          "type": "webview",
+          "id": "reaper.sshView",
+          "name": "SSH Manager"
+        }
+      ]
+    }
+  }
+}

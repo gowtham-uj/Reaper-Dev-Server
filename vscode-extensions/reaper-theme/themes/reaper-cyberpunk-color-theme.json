@@ -1,0 +1,89 @@
+{
+  "name": "Reaper Cyberpunk",
+  "type": "dark",
+  "colors": {
+    "activityBar.background": "#0b0f15",
+    "activityBar.foreground": "#00ffcc",
+    "activityBarBadge.background": "#bd00ff",
+    "badge.foreground": "#f7f9ff",
+    "button.background": "#00ffcc33",
+    "button.foreground": "#e6fbff",
+    "button.hoverBackground": "#00ffcc4d",
+    "editor.background": "#0f1115",
+    "editor.foreground": "#eaf2ff",
+    "editorCursor.foreground": "#00ffcc",
+    "editor.lineHighlightBackground": "#121826",
+    "editor.selectionBackground": "#bd00ff33",
+    "editorGroupHeader.tabsBackground": "#0b0f15",
+    "editorLineNumber.foreground": "#52627d",
+    "editorLineNumber.activeForeground": "#00ffcc",
+    "focusBorder": "#00ffcc66",
+    "input.background": "#0a0f14",
+    "input.border": "#00ffcc33",
+    "input.foreground": "#edf6ff",
+    "list.activeSelectionBackground": "#00ffcc22",
+    "list.activeSelectionForeground": "#ffffff",
+    "list.hoverBackground": "#151b29",
+    "panel.background": "#0a0f14",
+    "panel.border": "#203044",
+    "sideBar.background": "#0b1016",
+    "sideBar.foreground": "#d7e0ef",
+    "sideBar.border": "#1e2b3d",
+    "statusBar.background": "#081017",
+    "statusBar.foreground": "#00ffcc",
+    "tab.activeBackground": "#0f1115",
+    "tab.activeBorderTop": "#00ffcc",
+    "tab.activeForeground": "#f4fbff",
+    "tab.inactiveBackground": "#0b0f15",
+    "tab.inactiveForeground": "#7f8ea8",
+    "terminal.background": "#0a0a0a",
+    "terminal.foreground": "#dff9ff",
+    "terminalCursor.foreground": "#00ffcc",
+    "titleBar.activeBackground": "#080d13",
+    "titleBar.activeForeground": "#dff8ff"
+  },
+  "tokenColors": [
+    {
+      "scope": ["comment", "punctuation.definition.comment"],
+      "settings": {
+        "foreground": "#64748b"
+      }
+    },
+    {
+      "scope": ["keyword", "storage"],
+      "settings": {
+        "foreground": "#bd00ff"
+      }
+    },
+    {
+      "scope": ["string", "constant.other.symbol"],
+      "settings": {
+        "foreground": "#7bf7d8"
+      }
+    },
+    {
+      "scope": ["entity.name.function", "support.function"],
+      "settings": {
+        "foreground": "#00ffcc"
+      }
+    },
+    {
+      "scope": ["variable", "variable.parameter"],
+      "settings": {
+        "foreground": "#f0f6ff"
+      }
+    },
+    {
+      "scope": ["constant.numeric", "constant.language"],
+      "settings": {
+        "foreground": "#ffd74f"
+      }
+    },
+    {
+      "scope": ["entity.name.type", "support.type"],
+      "settings": {
+        "foreground": "#82aaff"
+      }
+    }
+  ]
+}

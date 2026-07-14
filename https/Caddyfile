@@ -1,0 +1,82 @@
+{
+	admin 127.0.0.1:2019
+	log {
+		output file /data/caddy-access.log
+		format json
+	}
+}
+
+http://{$REAPER_HOST:167.86.121.124} {
+	redir https://{host}{uri} 308
+}
+
+https://{$REAPER_HOST:167.86.121.124} {
+	tls {
+		issuer acme {
+			dir https://acme-v02.api.letsencrypt.org/directory
+			profile shortlived
+		}
+	}
+
+	header {
+		-Server
+		X-Frame-Options "SAMEORIGIN"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex, notranslate"
+	}
+
+	@blockedBots {
+		header_regexp User-Agent (?i)(GPTBot|ChatGPT-User|OAI-SearchBot|ClaudeBot|anthropic-ai|CCBot|Bytespider|PerplexityBot|Amazonbot|Google-Extended|Meta-ExternalAgent|Meta-ExternalFetcher|Diffbot)
+	}
+	respond @blockedBots "Forbidden" 403
+
+	# Legacy browser IDE and shared OpenCode server were retired in V2.
+	handle /ide* {
+		respond "Gone" 410
+	}
+	handle /theia* {
+		respond "Gone" 410
+	}
+	handle /opencode* {
+		respond "Gone" 410
+	}
+
+	# V2 runtime promoted to the V1 public surface.
+	handle /api/* {
+		reverse_proxy 127.0.0.1:4000 {
+			flush_interval -1
+		}
+	}
+
+	handle /terminal/ws {
+		# Caddy's reverse_proxy automatically preserves the WebSocket upgrade.
+		reverse_proxy 127.0.0.1:4000
+	}
+
+	handle /health {
+		rewrite * /api/health
+		reverse_proxy 127.0.0.1:4000
+	}
+
+	handle {
+		root * /srv/reaper/dist
+		encode gzip zstd
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+# Published-port snippets are generated fail-closed with the same Reaper
+# login-cookie verification used by the main app:
+# https://<subdomain>.<APEX> {
+# 	forward_auth 127.0.0.1:4000 {
+# 		uri /api/auth/me
+# 	}
+# 	reverse_proxy <podIP>:<containerPort>
+# }
+# Wildcard DNS for *.<APEX> must resolve to this host before published-port
+# subdomains can be issued certificates and reached by clients.
+import /caddy-dynamic/*.caddy

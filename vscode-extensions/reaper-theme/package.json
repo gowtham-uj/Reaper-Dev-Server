@@ -1,0 +1,18 @@
+{
+  "name": "reaper-theme",
+  "displayName": "Reaper Cyberpunk Theme",
+  "publisher": "reaper",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "contributes": {
+    "themes": [
+      {
+        "label": "Reaper Cyberpunk",
+        "uiTheme": "vs-dark",
+        "path": "./themes/reaper-cyberpunk-color-theme.json"
+      }
+    ]
+  }
+}

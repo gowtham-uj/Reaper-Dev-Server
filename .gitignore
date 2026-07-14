@@ -1,0 +1,210 @@
+# ---------------------------------------------------------------------------
+# Local secrets and environment
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+.envrc
+*.env.local
+
+# Docker Compose / pod env files
+docker-compose.override.yml
+docker-compose.local.yml
+.env.docker
+
+# SSH / TLS / signing material
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+*.keystore
+*.jks
+.reaper-ssh-password*
+reaper-ssh-password*
+.ssh/
+
+# Reaper session / runtime secrets
+**/reaper-ssh-password*
+**/*.reaper-ssh-password
+
+# Reaper local control-plane state
+.reaper-local/
+backend/.reaper-local/
+backend-state/
+backend-state/**
+!backend-state/.gitkeep
+!backend-state/**/.gitkeep
+
+# Live terminal / agent session manifests and archives
+**/archive/
+**/sessions.json
+**/tasks.json
+**/agent-clis.json
+**/audit.log
+**/audit.log.*
+
+# Anything that looks like a local hashed credential store
+users.json
+**/users.json
+passwords.json
+**/passwords.json
+credentials.json
+**/credentials.json
+
+# ---------------------------------------------------------------------------
+# Workspace, terminal, and runtime data
+# ---------------------------------------------------------------------------
+workspace/
+workspace/**
+!workspace/.gitkeep
+!workspace/starter-project/
+!workspace/starter-project/**
+!workspace/.theia/settings.json
+
+backend/.reaper-local/env/
+
+opencode/
+opencode/**
+terminal-home/
+terminal-home/**
+
+# Logs
+logs/
+*.log
+**/*.log
+!frontend-v2/src/terminal-protocol.test.js
+!backend/src/services/local-shell.test.js
+
+monitoring/logs/
+monitoring/tmp/
+monitoring/alerts.sqlite*
+monitoring/*.sqlite*
+
+caddy-data/
+caddy-config/
+caddy-dynamic/
+!caddy-dynamic/.gitkeep
+
+theia-data/
+theia-session-data/
+postgres-data/
+!postgres-data/.gitkeep
+!theia-data/.gitkeep
+
+vscode-extensions/reaper-*/node_modules/
+vscode-extensions/reaper-*/dist/
+
+# ---------------------------------------------------------------------------
+# Build artifacts
+# ---------------------------------------------------------------------------
+node_modules/
+**/node_modules/
+**/dist/
+build/
+out/
+coverage/
+.cache/
+.parcel-cache/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+.npm/
+.pnp/
+.pnp.js
+
+# Frontend build outputs
+frontend-v2/dist/
+frontend-v2/.vite/
+frontend-v2/stats.html
+
+# Backend built artifacts
+backend/build/
+backend/coverage/
+backend/.nyc_output/
+
+# ---------------------------------------------------------------------------
+# Editor / OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.iml
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+.DS_Store
+Thumbs.db
+desktop.ini
+~$*
+*.swp
+*.swo
+*~
+.Spotlight-V100
+.Trashes
+
+# ---------------------------------------------------------------------------
+# Local / temporary project artifacts
+# ---------------------------------------------------------------------------
+tmp/
+tmp/**
+!tmp/.gitkeep
+!tmp/vps-projects/.gitkeep
+backend/tmp/
+
+.cache/
+.parcel-cache/
+.npm/
+.pnpm-store/
+.yarn/
+
+# Backup files
+*.bak
+*.backup
+*.orig
+*.rej
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+app-backup-*/
+backups/
+.codex-backups/
+.codex-staging/
+workspace-backup-*/
+
+# Python (in case of helper scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.tox/
+
+# Generated assets that will be rebuilt
+frontend-v2/dist/assets/
+backend/.reaper-local/sessions.json
+backend/.reaper-local/sessions.json.*
+
+# Local config overrides
+.npmrc
+.yarnrc
+.pnpmrc
+.babelrc
+.babelrc.js
+.babelrc.json
+postcss.config.js
+postcss.config.cjs
+
+# Coverage output
+coverage/
+.nyc_output/
+*.lcov
+*.coverage
+*.cover

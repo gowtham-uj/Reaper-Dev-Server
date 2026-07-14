@@ -1,0 +1,32 @@
+{
+  "name": "reaper-ide-guard",
+  "displayName": "Reaper IDE Guard",
+  "publisher": "reaper",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "reaper.ideGuard.blockOpenFile",
+        "title": "Open File (Disabled)",
+        "category": "Reaper"
+      },
+      {
+        "command": "reaper.ideGuard.blockOpenFolder",
+        "title": "Open Folder (Disabled)",
+        "category": "Reaper"
+      },
+      {
+        "command": "reaper.ideGuard.showProjectBoundary",
+        "title": "Show Project Boundary",
+        "category": "Reaper"
+      }
+    ]
+  }
+}

@@ -1,0 +1,64 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    user: "0:0"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      VPS_PROJECTS: /workspace
+      GLOBAL_ENV: /global-env/global-env.json
+      STATE_DIR: /app/backend/.reaper-local
+      REAPER_PORT: 4000
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in app/.env}
+      COOKIE_SECURE: "true"
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      APEX_DOMAIN: ${APEX_DOMAIN:-}
+      # Docker daemon bind sources are host paths. Because this Compose project
+      # is deployed at /app, ./workspace resolves to /app/workspace on the host.
+      HOST_PROJECTS_ROOT: /app/workspace
+      REAPER_POD_IMAGE: reaper-pod:latest
+      CADDY_CONTAINER: reaper-caddy
+    volumes:
+      - ./workspace:/workspace
+      - ./global-env:/global-env
+      - ./backend-state:/app/backend/.reaper-local
+      - ./terminal-home/root:/root
+      - ./opencode/data:/root/.local/share/opencode
+      - ./opencode/config:/root/.config/opencode
+      - ./opencode/cache:/root/.cache/opencode
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./caddy-dynamic:/caddy-dynamic
+    ports:
+      - "127.0.0.1:4000:4000"
+    expose:
+      - "4000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4000/api/ready || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    container_name: reaper-caddy
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      REAPER_HOST: ${APEX_DOMAIN:-167.86.121.124}
+    depends_on:
+      - backend
+    volumes:
+      - ./https/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy-data:/data
+      - ./caddy-config:/config
+      - ./frontend-v2/dist:/srv/reaper/dist:ro
+      - ./caddy-dynamic:/caddy-dynamic:ro
+
+

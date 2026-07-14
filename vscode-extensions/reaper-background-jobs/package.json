@@ -1,0 +1,24 @@
+{
+  "name": "reaper-background-jobs",
+  "displayName": "Reaper Background Jobs",
+  "publisher": "reaper",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onView:reaper.backgroundJobsView"
+  ],
+  "contributes": {
+    "views": {
+      "explorer": [
+        {
+          "type": "webview",
+          "id": "reaper.backgroundJobsView",
+          "name": "Background Jobs"
+        }
+      ]
+    }
+  }
+}
