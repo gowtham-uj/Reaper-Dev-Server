@@ -97,7 +97,7 @@ const MIN_CLIENT_PING_INTERVAL_MS = 250;
 const MAX_CLIENT_FRAMES_PER_SECOND = 240;
 const MAX_CLIENT_BYTES_PER_SECOND = 2 * 1024 * 1024;
 const RESIZE_COALESCE_MS = 33;
-const INPUT_COALESCE_MS = 8;
+const CONTROL_INPUT_FAST_PATH_BYTES = 4096;
 const INPUT_BATCH_MAX_BYTES = 32 * 1024;
 const CONTROL_MODE_FORMAT = [
   "alternate_on", "cursor_flag", "keypad_cursor_flag", "keypad_flag",
@@ -1284,6 +1284,7 @@ function detachStream(connection, streamId, code = null, notify = false) {
   clearTimeout(stream.slowTimer);
   clearTimeout(stream.resizeTimer);
   stream.closed = true;
+  stream.cancelControlInput?.(new Error("terminal stream closed"));
   clearInterval(stream.pressurePoll);
   for (const waiter of stream.capacityWaiters.splice(0)) waiter.resolve(false);
   let releaseOperation = null;
@@ -1478,7 +1479,6 @@ function settlePodInputBatch(stream, batch, error = null) {
 
 async function runPodInputPump(stream) {
   while (stream.inputQueue.length) {
-    await new Promise((resolve) => setTimeout(resolve, INPUT_COALESCE_MS));
     if (stream.closed) {
       const error = new Error("terminal stream closed");
       settlePodInputBatch(stream, stream.inputQueue.splice(0), error);
@@ -1496,10 +1496,14 @@ async function runPodInputPump(stream) {
 
     try {
       const input = batch.map((entry) => entry.input).join("");
-      const result = await podRuntime.podExec(stream.project, [
-        "tmux", "-S", TMUX_SOCKET, "send-keys", "-t", `=${stream.name}:`, "-l", "--", input
-      ]);
-      if (result.code !== 0) throw new Error(result.stderr || "terminal input failed");
+      if (stream.controlInput && batchBytes <= CONTROL_INPUT_FAST_PATH_BYTES) {
+        await stream.controlInput(input);
+      } else {
+        const result = await podRuntime.podExec(stream.project, [
+          "tmux", "-S", TMUX_SOCKET, "send-keys", "-t", `=${stream.name}:`, "-l", "--", input
+        ]);
+        if (result.code !== 0) throw new Error(result.stderr || "terminal input failed");
+      }
       settlePodInputBatch(stream, batch);
     } catch (error) {
       stream.inputFailure = error;
@@ -1599,7 +1603,10 @@ function startControlHandoff(stream) {
   stream.pty = {
     pause: rawPty.pause ? () => rawPty.pause() : undefined,
     resume: rawPty.resume ? () => rawPty.resume() : undefined,
-    resize: rawPty.resize ? (cols, rows) => rawPty.resize(cols, rows) : undefined,
+    resize: (cols, rows) => {
+      rawPty.resize?.(cols, rows);
+      queueControlResize(cols, rows);
+    },
     kill: rawPty.kill ? () => rawPty.kill() : undefined
   };
   let settled = false;
@@ -1608,6 +1615,9 @@ function startControlHandoff(stream) {
   let streamIngressBytes = 0;
   let handoffPhase = "attach";
   let captureBlock = null;
+  let resizeCommandPending = null;
+  let liveCommandActive = null;
+  const liveInputCommands = [];
   let mode = null;
   let historyRows = [];
   let historyStart = 0;
@@ -1637,6 +1647,72 @@ function startControlHandoff(stream) {
     () => fail(new Error("tmux control handoff timed out")),
     CONTROL_HANDOFF_TIMEOUT_MS
   );
+  const writeControlResize = (cols, rows) => {
+    rawPty.write(`refresh-client -C ${cols},${rows}\n`);
+  };
+  const rejectLiveCommands = (error) => {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    const pending = liveCommandActive
+      ? [liveCommandActive, ...liveInputCommands.splice(0)]
+      : liveInputCommands.splice(0);
+    liveCommandActive = null;
+    for (const command of pending) command.reject?.(failure);
+  };
+  const flushControlCommand = () => {
+    if (
+      failed ||
+      stream.closed ||
+      handoffPhase !== "live" ||
+      captureBlock ||
+      liveCommandActive
+    ) return;
+    let next = liveInputCommands.shift();
+    if (!next && resizeCommandPending) {
+      const resize = resizeCommandPending;
+      resizeCommandPending = null;
+      next = {
+        kind: "resize",
+        command: `refresh-client -C ${resize.cols},${resize.rows}\n`
+      };
+    }
+    if (!next) return;
+    liveCommandActive = next;
+    try {
+      rawPty.write(next.command);
+    } catch (error) {
+      liveCommandActive = null;
+      next.reject?.(error);
+      fail(error);
+    }
+  };
+  const issueInitialResize = () => {
+    handoffPhase = "resize";
+    try {
+      writeControlResize(stream.cols, stream.rows);
+    } catch (error) {
+      fail(error);
+    }
+  };
+  const queueControlResize = (cols, rows) => {
+    resizeCommandPending = { cols, rows };
+    flushControlCommand();
+  };
+  const queueControlInput = (input) => {
+    const bytes = Buffer.from(input, "utf8");
+    if (!bytes.length) return Promise.resolve();
+    const keys = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(" ");
+    return new Promise((resolve, reject) => {
+      liveInputCommands.push({
+        kind: "input",
+        command: `send-keys -t "=${stream.name}:" -H ${keys}\n`,
+        resolve,
+        reject
+      });
+      flushControlCommand();
+    });
+  };
+  stream.controlInput = queueControlInput;
+  stream.cancelControlInput = rejectLiveCommands;
   const issueMode = () => {
     handoffPhase = "mode";
     try {
@@ -1693,7 +1769,10 @@ function startControlHandoff(stream) {
     handoffPhase = "live";
     settled = true;
     const retainedRows = historyRows.slice(historyStart);
-    resolveBoundary(Buffer.concat([prefix, ...retainedRows], prefix.length + historyBytes));
+    const retainedBytes = retainedRows.length ? historyBytes - 2 : historyBytes;
+    if (retainedRows.length) retainedRows[retainedRows.length - 1] = retainedRows.at(-1).subarray(0, -2);
+    resolveBoundary(Buffer.concat([prefix, ...retainedRows], prefix.length + retainedBytes));
+    flushControlCommand();
   };
   const handleLine = (line) => {
     if (line.subarray(0, CONTROL_DCS_PREFIX.length).equals(CONTROL_DCS_PREFIX)) {
@@ -1726,13 +1805,27 @@ function startControlHandoff(stream) {
       if (!captureBlock || signature !== captureBlock) return fail(new Error("unmatched tmux control boundary"));
       captureBlock = null;
       const completedPhase = handoffPhase;
+      if (completedPhase === "live") {
+        const command = liveCommandActive;
+        liveCommandActive = null;
+        if (!command) return fail(new Error("unexpected tmux live command response"));
+        if (isError) {
+          const error = new Error(`tmux ${command.kind} command failed`);
+          command.reject?.(error);
+          return fail(error);
+        }
+        command.resolve?.();
+        flushControlCommand();
+        return;
+      }
       if (isError) {
         const detail = completedPhase === "history"
           ? historyRows.at(-1)?.toString("utf8").trim()
           : mode?.toString("utf8").trim();
         return fail(new Error(detail || diagnostics || `tmux ${completedPhase} command failed`));
       }
-      if (completedPhase === "attach") issueMode();
+      if (completedPhase === "attach") issueInitialResize();
+      else if (completedPhase === "resize") issueMode();
       else if (completedPhase === "mode") issueCapture();
       else if (completedPhase === "history") finishCapture();
       return;

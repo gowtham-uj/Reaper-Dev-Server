@@ -33,6 +33,7 @@ function makeFakeRuntime() {
   let activeSendKeys = 0;
   let maxActiveSendKeys = 0;
   const sendKeysStarted = [];
+  let controlCommandId = 10;
   return {
     calls,
     ptys,
@@ -176,6 +177,28 @@ function makeFakeRuntime() {
               this,
               plan.modeChunks || ["%begin 2 2 0\n1,1,1,1,0,0,0,0,0,1\n%end 2 2 0\n"]
             ));
+          }
+          if (isControl && command.startsWith("refresh-client ")) {
+            queueMicrotask(() => emitChunks(
+              this,
+              plan.resizeChunks || ["%begin 2 2 0\n%end 2 2 0\n"]
+            ));
+          }
+          if (isControl && command.startsWith("send-keys ")) {
+            const id = ++controlCommandId;
+            const bytes = command.trim().split(" -H ")[1]?.split(/\s+/).map((value) => Number.parseInt(value, 16)) || [];
+            const input = Buffer.from(bytes).toString("utf8");
+            queueMicrotask(async () => {
+              sendKeysStarted.push(input);
+              activeSendKeys += 1;
+              maxActiveSendKeys = Math.max(maxActiveSendKeys, activeSendKeys);
+              this.dataCallback?.(`%begin ${id} ${id} 0\n`);
+              const delayed = sendKeysGate;
+              sendKeysGate = null;
+              if (delayed) await delayed;
+              activeSendKeys -= 1;
+              this.dataCallback?.(`%end ${id} ${id} 0\n`);
+            });
           }
           if (isControl && command.startsWith("capture-pane ")) {
             queueMicrotask(async () => {
@@ -388,7 +411,7 @@ test("RTP open orders history before ready/output and disconnect only detaches",
   assert.equal(historyFrame.flags, protocol.FLAGS.FINAL);
   const renderedHistory = Buffer.from(historyFrame.payload).toString();
   assert.match(renderedHistory, /^\u001b\[\?1049h/);
-  assert.ok(renderedHistory.endsWith("old\r\nline\r\n"));
+  assert.ok(renderedHistory.endsWith("old\r\nline"));
   const streamId = ws.frames[opened].streamId;
   const pty = fake.ptys.at(-1);
   assert.equal(pty.argv[0], "env");
@@ -396,17 +419,24 @@ test("RTP open orders history before ready/output and disconnect only detaches",
   assert.equal(pty.argv[2], "sh");
   assert.equal(pty.argv[5], "reaper-capture-session");
   const emoji = Buffer.from("😀", "utf8");
+  const inputsBefore = fake.sendKeysStarted.length;
   ws.emit("message", protocol.encodeFrame({ type: protocol.TYPES.INPUT, streamId, sequence: 1, payload: emoji.subarray(0, 2) }), true);
   await tick();
-  assert.equal(fake.calls.some((call) => call.argv.includes("send-keys") && call.argv.includes("😀")), false);
+  assert.equal(fake.sendKeysStarted.length, inputsBefore);
   ws.emit("message", protocol.encodeFrame({ type: protocol.TYPES.INPUT, streamId, sequence: 2, payload: emoji.subarray(2) }), true);
-  await waitFor(() => fake.calls.some((call) => call.argv.includes("send-keys") && call.argv.includes("😀")));
+  await waitFor(() => fake.sendKeysStarted.length === inputsBefore + 1);
+  assert.equal(fake.sendKeysStarted.at(-1), "😀");
+  assert.ok(pty.writes.some((write) => write.toString().endsWith("-H f0 9f 98 80\n")));
   ws.emit("message", protocol.encodeFrame({ type: protocol.TYPES.RESIZE, streamId, sequence: 0, payload: protocol.encodeResize(100, 30) }), true);
   ws.emit("message", protocol.encodeFrame({ type: protocol.TYPES.RESIZE, streamId, sequence: 0, payload: protocol.encodeResize(100, 30) }), true);
   ws.emit("message", protocol.encodeFrame({ type: protocol.TYPES.RESIZE, streamId, sequence: 0, payload: protocol.encodeResize(120, 40) }), true);
   ws.emit("message", protocol.encodeFrame({ type: protocol.TYPES.RESIZE, streamId, sequence: 0, payload: protocol.encodeResize(120, 40) }), true);
-  await waitFor(() => pty.resizes.length === 1);
+  await waitFor(() => pty.resizes.length === 1 && pty.writes.some((write) => write.toString() === "refresh-client -C 120,40\n"));
   assert.deepEqual(pty.resizes, [[120, 40]]);
+  assert.deepEqual(
+    pty.writes.filter((write) => write.toString().startsWith("refresh-client ")).map((write) => write.toString()),
+    ["refresh-client -C 100,30\n", "refresh-client -C 120,40\n"]
+  );
   const liveChunk = `%output %1 ${"a".repeat(128 * 1024)}\n`;
   for (let index = 0; index < 24; index += 1) {
     pty.dataCallback(liveChunk);
@@ -450,6 +480,7 @@ test("pod input bursts are coalesced in order, serialized, and update live activ
   await waitFor(() => ws.frames.filter((frame) => frame.type === protocol.TYPES.ACK).some((frame) => frame.sequence === 3));
   assert.deepEqual(fake.sendKeysStarted.slice(startedAt), ["first", "secondthird"]);
   assert.equal(fake.maxActiveSendKeys, 1);
+  assert.equal(fake.calls.some((call) => call.project === "input-order" && call.argv.includes("send-keys")), false);
 
   const active = (await shell.listSessions({ path: "input-order" })).find((session) => session.name === "main");
   assert.equal(active.attachedClients, 1);
@@ -606,7 +637,7 @@ test("socket close during capture cannot spawn a late viewer", async () => {
   shell.attachTerminalWebSocket(wss, { verifyCsrf: (_req, token) => token === "csrf" });
 
   const ws = await attachFakeTerminal(wss, "cancel-attach", "cancel-1", { waitForReady: false });
-  await waitFor(() => fake.ptys.length === ptysBefore + 1 && fake.ptys.at(-1).writes.length === 2);
+  await waitFor(() => fake.ptys.length === ptysBefore + 1 && fake.ptys.at(-1).writes.length === 3);
   ws.close(1000, "cancel");
   releaseCapture();
   await waitFor(() => fake.captureCompletionCount("cancel-attach") === capturesBefore + 1);
@@ -639,10 +670,11 @@ test("control handoff parses split octal output and crosses the capture boundary
   const output = Buffer.concat(ws.frames.filter((frame) => frame.type === protocol.TYPES.OUTPUT).map((frame) => Buffer.from(frame.payload)));
   assert.deepEqual(
     fake.ptys.at(-1).writes.map((write) => write.toString().split(" ", 1)[0]),
-    ["display-message", "capture-pane"]
+    ["refresh-client", "display-message", "capture-pane"]
   );
-  assert.equal(fake.ptys.at(-1).writes[1].toString().includes(" -E "), false);
-  assert.ok(history.includes(Buffer.from("SNAP é\r\n")));
+  assert.equal(fake.ptys.at(-1).writes[2].toString().includes(" -E "), false);
+  assert.ok(history.includes(Buffer.from("SNAP é")));
+  assert.equal(history.subarray(-2).toString(), "é");
   assert.equal(history.toString().split("SNAP EDGE").length - 1, 0);
   assert.deepEqual(output, Buffer.from([0x4c, 0x49, 0x56, 0x45, 0x20, 0x00, 0x54, 0x41, 0x49, 0x4c]));
   assert.equal(output.includes(Buffer.from("SNAP EDGE")), false);
@@ -698,7 +730,7 @@ test("pathological capture retains bounded newest rows and resets before renderi
   const history = Buffer.concat(ws.frames.filter((frame) => frame.type === protocol.TYPES.HISTORY).map((frame) => Buffer.from(frame.payload)));
   assert.ok(history.length <= 1024 * 1024 + 256);
   assert.equal(history.subarray(0, 2).toString("ascii"), "\u001bc");
-  assert.ok(history.subarray(-12).toString().endsWith("newest-row\r\n"));
+  assert.ok(history.subarray(-12).toString().endsWith("newest-row"));
   ws.close(1000, "done");
 });
 
