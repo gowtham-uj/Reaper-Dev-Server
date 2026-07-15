@@ -15,6 +15,13 @@ function normalizePort(port = {}) {
   };
 }
 
+function isIpHostname(hostname) {
+  const host = String(hostname || "").replace(/^\[|\]$/g, "");
+  if (host.includes(":")) return true;
+  const octets = host.split(".");
+  return octets.length === 4 && octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255);
+}
+
 export function ProjectSessions(props) {
   const [sessions, setSessions] = createSignal([]);
   const [sessionsState, setSessionsState] = createSignal("loading");
@@ -174,9 +181,12 @@ export function ProjectSessions(props) {
       const port = Number(row.containerPort);
       const subdomain = row.subdomain.trim().toLowerCase();
       if (!Number.isInteger(port) || port < 1 || port > 65535) return `Row ${index + 1}: container port must be an integer from 1 to 65535.`;
-      if (!SUBDOMAIN.test(subdomain)) return `Row ${index + 1}: subdomain must use lowercase letters, numbers, or internal hyphens.`;
+      if (usesIpPublishing() && (port < 1024 || port === 2019 || port === 4000)) {
+        return `Row ${index + 1}: IP publishing requires an available host port from 1024 to 65535.`;
+      }
+      if (!SUBDOMAIN.test(subdomain)) return `Row ${index + 1}: route name must use lowercase letters, numbers, or internal hyphens.`;
       if (seenPorts.has(port)) return `Row ${index + 1}: container port ${port} is already published.`;
-      if (seenSubdomains.has(subdomain)) return `Row ${index + 1}: subdomain “${subdomain}” is already used.`;
+      if (seenSubdomains.has(subdomain)) return `Row ${index + 1}: route name “${subdomain}” is already used.`;
       seenPorts.add(port);
       seenSubdomains.add(subdomain);
     }
@@ -212,9 +222,18 @@ export function ProjectSessions(props) {
     }
   }
 
-  function publishedUrl(subdomain) {
-    const host = typeof window === "undefined" ? "example.com" : window.location.hostname;
-    return `https://${subdomain || "subdomain"}.${host}`;
+  function usesIpPublishing() {
+    return typeof window !== "undefined" && isIpHostname(window.location.hostname);
+  }
+
+  function publishedUrl(port = {}) {
+    const subdomain = port.subdomain || "route";
+    if (typeof window === "undefined") return `https://${subdomain}.example.com`;
+    if (!usesIpPublishing()) return `https://${subdomain}.${window.location.hostname}`;
+    const hostname = window.location.hostname.includes(":") && !window.location.hostname.startsWith("[")
+      ? `[${window.location.hostname}]`
+      : window.location.hostname;
+    return `${window.location.protocol}//${hostname}:${port.containerPort || "port"}/`;
   }
 
   return (
@@ -321,7 +340,11 @@ export function ProjectSessions(props) {
         <div>
           <div class="page__eyebrow">Networking</div>
           <h2 id="published-ports-title" class="project-sessions-title">Published ports</h2>
-          <p id="published-ports-help" class="muted project-sessions-lede">Publish a container port at a project subdomain. Wildcard DNS and TLS must be configured by the server administrator.</p>
+          <p id="published-ports-help" class="muted project-sessions-lede">
+            {usesIpPublishing()
+              ? "Publish a container port directly on this server’s IP address. Ports below 1024 and Reaper’s own ports are reserved."
+              : "Publish a container port at a project subdomain. Wildcard DNS and TLS must be configured by the server administrator."}
+          </p>
         </div>
         <Show when={portsState() !== "loading"} fallback={<div class="muted" role="status">Loading published ports…</div>}>
           <Show when={portsState() !== "error"} fallback={<div class="empty-state" role="alert"><h3>Published ports could not be loaded</h3><p>{portsError()}</p><button class="btn btn--outline" type="button" onClick={() => void loadPorts()}>Retry</button></div>}>
@@ -335,9 +358,9 @@ export function ProjectSessions(props) {
                     <input id={`container-port-${index()}`} class="input" type="number" inputmode="numeric" min="1" max="65535" step="1" required value={row.containerPort} aria-invalid={validationError() && (!Number.isInteger(Number(row.containerPort)) || Number(row.containerPort) < 1 || Number(row.containerPort) > 65535) ? "true" : undefined} onInput={(event) => updatePort(index(), "containerPort", event.currentTarget.value)} />
                   </div>
                   <div class="field published-port-field published-port-field--subdomain">
-                    <label class="field__label" for={`port-subdomain-${index()}`}>Subdomain</label>
-                    <input id={`port-subdomain-${index()}`} class="input" type="text" required maxlength="63" autocomplete="off" placeholder="api" value={row.subdomain} aria-invalid={row.subdomain && !SUBDOMAIN.test(row.subdomain) ? "true" : undefined} onInput={(event) => updatePort(index(), "subdomain", event.currentTarget.value.toLowerCase())} />
-                    <a class="published-port-url" href={SUBDOMAIN.test(row.subdomain) ? publishedUrl(row.subdomain) : undefined} target="_blank" rel="noreferrer">{publishedUrl(row.subdomain)}</a>
+                    <label class="field__label" for={`port-subdomain-${index()}`}>Route name</label>
+                    <input id={`port-subdomain-${index()}`} class="input" type="text" required maxlength="63" autocomplete="off" placeholder="app" value={row.subdomain} aria-invalid={row.subdomain && !SUBDOMAIN.test(row.subdomain) ? "true" : undefined} onInput={(event) => updatePort(index(), "subdomain", event.currentTarget.value.toLowerCase())} />
+                    <a class="published-port-url" href={SUBDOMAIN.test(row.subdomain) ? publishedUrl(row) : undefined} target="_blank" rel="noreferrer">{publishedUrl(row)}</a>
                   </div>
                   <button class="btn btn--ghost published-port-remove" type="button" onClick={() => setPorts((current) => current.filter((_, rowIndex) => rowIndex !== index()))} aria-label={`Remove published port row ${index() + 1}`}>Remove</button>
                 </fieldset>

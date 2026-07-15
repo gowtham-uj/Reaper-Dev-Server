@@ -130,7 +130,7 @@ The backend runs as root with access to the Docker daemon socket. That is a host
 
 ## Deployment
 
-Requirements: Linux, Docker Engine with the Compose plugin, wildcard DNS for published subdomains when `APEX_DOMAIN` is used, and a built frontend.
+Requirements: Linux, Docker Engine with the Compose plugin, and a built frontend. Domain deployments also require wildcard DNS for published project subdomains.
 
 Copy the environment template and set the required secrets:
 
@@ -139,15 +139,28 @@ cd /app
 cp .env.example .env
 ```
 
+For an IP-only deployment:
+
 ```env
 APP_ADMIN_USERNAME=
 APP_ADMIN_PASSWORD=replace-with-a-strong-password
 JWT_ACCESS_SECRET=replace-with-a-long-random-secret
-APEX_DOMAIN=example.com
+REAPER_HOST=203.0.113.10
+REAPER_TLS=internal
+APEX_DOMAIN=
 COOKIE_DOMAIN=
 ```
 
-`APP_ADMIN_PASSWORD` must be at least 12 characters and `JWT_ACCESS_SECRET` must be a long random value. Keep `COOKIE_DOMAIN` empty for host-only session cookies. Published wildcard subdomains currently require a shared domain cookie and therefore must host only trusted applications; do not treat them as hostile multi-tenant origins.
+For a domain deployment:
+
+```env
+REAPER_HOST=dev.example.com
+REAPER_TLS=admin@example.com
+APEX_DOMAIN=dev.example.com
+COOKIE_DOMAIN=dev.example.com
+```
+
+`APP_ADMIN_PASSWORD` must be at least 12 characters and `JWT_ACCESS_SECRET` must be a long random value. IP deployments publish a project container port at `https://<REAPER_HOST>:<containerPort>/`; the port must be at least 1024, available on the host, and unique across projects. Caddy signs IP certificates with its local CA, so clients must trust the Caddy root certificate. Domain deployments publish `https://<route>.<APEX_DOMAIN>/` and require matching wildcard DNS. Domain publishing shares the Reaper authentication cookie with trusted project subdomains; do not treat published applications as hostile multi-tenant origins.
 
 Build the frontend, then run the guarded deployment:
 

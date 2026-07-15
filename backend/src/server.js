@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import fss from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { z } from "zod";
@@ -37,12 +38,23 @@ const ADMIN_PASS = String(process.env.APP_ADMIN_PASSWORD || "");
 const COOKIE_SECURE = process.env.COOKIE_SECURE === "true" || (process.env.NODE_ENV === "production" && process.env.COOKIE_SECURE !== "false");
 if (process.env.NODE_ENV === "production" && !COOKIE_SECURE) throw new Error("COOKIE_SECURE cannot be disabled in production");
 const DOMAIN_RE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/;
-const APEX_DOMAIN = String(process.env.APEX_DOMAIN || "").trim().toLowerCase().replace(/^\./, "");
+const CONFIGURED_APEX_DOMAIN = String(process.env.APEX_DOMAIN || "").trim().toLowerCase().replace(/^\./, "");
+const REAPER_HOST = String(process.env.REAPER_HOST || CONFIGURED_APEX_DOMAIN).trim().toLowerCase();
+const REAPER_HOST_IS_IP = Boolean(isIP(REAPER_HOST));
+if (REAPER_HOST && !REAPER_HOST_IS_IP && !DOMAIN_RE.test(REAPER_HOST)) {
+  throw new Error("REAPER_HOST must be a valid DNS domain or IP address");
+}
+if (CONFIGURED_APEX_DOMAIN && !DOMAIN_RE.test(CONFIGURED_APEX_DOMAIN)) {
+  throw new Error("APEX_DOMAIN must be a valid apex DNS domain");
+}
+if (CONFIGURED_APEX_DOMAIN && REAPER_HOST !== CONFIGURED_APEX_DOMAIN) {
+  throw new Error("REAPER_HOST and APEX_DOMAIN must match when APEX_DOMAIN is configured");
+}
+const APEX_DOMAIN = CONFIGURED_APEX_DOMAIN || (REAPER_HOST_IS_IP ? "" : REAPER_HOST);
 const CONFIGURED_COOKIE_DOMAIN = String(process.env.COOKIE_DOMAIN || "").trim().toLowerCase().replace(/^\./, "");
-if (APEX_DOMAIN && !DOMAIN_RE.test(APEX_DOMAIN)) throw new Error("APEX_DOMAIN must be a valid apex DNS domain");
 if (CONFIGURED_COOKIE_DOMAIN && !DOMAIN_RE.test(CONFIGURED_COOKIE_DOMAIN)) throw new Error("COOKIE_DOMAIN must be a valid apex DNS domain");
-if (APEX_DOMAIN && CONFIGURED_COOKIE_DOMAIN && CONFIGURED_COOKIE_DOMAIN !== APEX_DOMAIN) {
-  throw new Error("COOKIE_DOMAIN must match APEX_DOMAIN so published-port authentication remains scoped to this deployment");
+if (CONFIGURED_COOKIE_DOMAIN && CONFIGURED_COOKIE_DOMAIN !== APEX_DOMAIN) {
+  throw new Error("COOKIE_DOMAIN must match the deployment domain and must be empty for IP-based deployments");
 }
 const COOKIE_DOMAIN = CONFIGURED_COOKIE_DOMAIN || APEX_DOMAIN;
 const COOKIE_BASE = `Path=/; HttpOnly; SameSite=Lax${COOKIE_SECURE ? "; Secure" : ""}${COOKIE_DOMAIN ? `; Domain=${COOKIE_DOMAIN}` : ""}`;

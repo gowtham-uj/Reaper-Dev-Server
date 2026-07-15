@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
+import { isIP } from "node:net";
 import { randomUUID } from "node:crypto";
 import * as defaultPodRuntime from "./pod-runtime.js";
 import {
@@ -33,6 +34,9 @@ const TMUX_SOCKET = "/reaper/tmux.sock";
 const TMUX_CONFIG = "/reaper/tmux.conf";
 const SESSION_NAME_RE = /^[a-z0-9-]{1,32}$/;
 const SUBDOMAIN_RE = /^(?!-)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const DOMAIN_RE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/;
+const IP_PUBLISH_MIN_PORT = 1024;
+const IP_PUBLISH_RESERVED_PORTS = new Set([2019, 4000]);
 const MARKED_PROCESS_CLEANUP_SCRIPT = 'match=-Fx; [ "$2" = prefix ] && match=-F; for signal in TERM KILL; do matched=0; for environment in /proc/[0-9]*/environ; do [ -r "$environment" ] || continue; if grep -zq $match -- "$1" "$environment" 2>/dev/null; then matched=1; pid=${environment#/proc/}; pid=${pid%/environ}; [ "$pid" -le 1 ] || kill "-$signal" "$pid" 2>/dev/null || :; fi; done; if [ "$signal" = TERM ] && [ "$matched" = 1 ]; then sleep 0.3; fi; done; :';
 const PREPARE_POD_SESSION_SCRIPT = [
   "set -eu",
@@ -993,45 +997,80 @@ async function getProjectPorts(project) {
   catch (error) { if (error.code === "ENOENT") return { ports: [] }; throw error; }
 }
 
-async function assertPublishedSubdomainsAvailable(project, ports) {
-  const requested = new Set(ports.map((port) => port.subdomain));
-  if (!requested.size) return;
+function publicationConfig() {
+  const configuredHost = String(process.env.REAPER_HOST || "").trim().toLowerCase();
+  const configuredApex = String(process.env.APEX_DOMAIN || "").trim().toLowerCase().replace(/^\./, "");
+  const host = configuredHost || configuredApex;
+  if (DOMAIN_RE.test(host)) {
+    if (configuredApex && configuredApex !== host) {
+      throw new Error("REAPER_HOST and APEX_DOMAIN must match for domain-based published ports");
+    }
+    return { mode: "domain", host };
+  }
+  if (isIP(host)) {
+    if (configuredApex) throw new Error("APEX_DOMAIN must be empty when REAPER_HOST is an IP address");
+    return { mode: "ip", host, caddyHost: isIP(host) === 6 ? `[${host}]` : host };
+  }
+  throw new Error("REAPER_HOST or APEX_DOMAIN must be a valid DNS domain or IP address for published ports");
+}
+
+function assertPublicationPortAllowed(config, port) {
+  if (config.mode !== "ip") return;
+  if (port.containerPort < IP_PUBLISH_MIN_PORT || IP_PUBLISH_RESERVED_PORTS.has(port.containerPort)) {
+    throw new Error(`containerPort must be an available host port from ${IP_PUBLISH_MIN_PORT} to 65535 for IP-based publishing`);
+  }
+}
+
+function publicationKey(config, port) {
+  return config.mode === "ip" ? port.containerPort : port.subdomain;
+}
+
+async function assertPublishedRoutesAvailable(project, ports) {
+  if (!ports.length) return;
+  const config = publicationConfig();
+  for (const port of ports) assertPublicationPortAllowed(config, port);
+  const requested = new Set(ports.map((port) => publicationKey(config, port)));
   const projects = (await fs.readdir(PROJECTS_ROOT, { withFileTypes: true }))
     .filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== project)
     .map((entry) => entry.name);
   for (const otherProject of projects) {
     const { ports: existing } = await getProjectPorts(otherProject);
-    const conflict = existing.find((port) => requested.has(port.subdomain));
-    if (conflict) throw new Error(`subdomain "${conflict.subdomain}" is already published by project "${otherProject}"`);
+    const conflict = existing.find((port) => requested.has(publicationKey(config, port)));
+    if (!conflict) continue;
+    if (config.mode === "ip") {
+      throw new Error(`host port ${conflict.containerPort} is already published by project "${otherProject}"`);
+    }
+    throw new Error(`subdomain "${conflict.subdomain}" is already published by project "${otherProject}"`);
   }
 }
 
+function publishedCaddyBlock(config, port) {
+  const address = config.mode === "ip"
+    ? `https://${config.caddyHost}:${port.containerPort}`
+    : `https://${port.subdomain}.${config.host}`;
+  const tls = config.mode === "ip" ? "\n\ttls internal" : "";
+  return `${address} {${tls}\n\theader {\n\t\t-Server\n\t\tX-Content-Type-Options "nosniff"\n\t\tX-Frame-Options "SAMEORIGIN"\n\t\tReferrer-Policy "same-origin"\n\t\tX-Robots-Tag "noindex, nofollow, noarchive"\n\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"\n\t}\n\tforward_auth 127.0.0.1:4000 {\n\t\turi /api/auth/me\n\t}\n\treverse_proxy ${port.ip}:${port.containerPort} {\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_access=[^;]*" ""\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_csrf=[^;]*" ""\n\t\theader_down Set-Cookie "^reaper_(access|csrf)=.*$" ""\n\t}\n}`;
+}
+
 async function regenerateCaddyPorts({ quarantineInvalid = false, verifiedProjects = null } = {}) {
-  const apex = String(process.env.APEX_DOMAIN || "").trim().toLowerCase();
-  const apexValid = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/.test(apex);
   const projects = (await fs.readdir(PROJECTS_ROOT, { withFileTypes: true }))
     .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
     .map((entry) => entry.name)
     .sort();
   const publications = [];
   const quarantined = new Set();
+  let config = null;
   for (const project of projects) {
     let ports;
     try {
       ({ ports } = await getProjectPorts(project));
-    } catch (error) {
-      if (!quarantineInvalid) throw error;
-      quarantined.add(project);
-      console.error(`[reaper] quarantined published ports for ${project}:`, error.message);
-      continue;
-    }
-    if (!ports.length) continue;
-    if (verifiedProjects && !verifiedProjects.has(project)) {
-      quarantined.add(project);
-      continue;
-    }
-    if (!apexValid) throw new Error("APEX_DOMAIN is required for published ports");
-    try {
+      if (!ports.length) continue;
+      config ||= publicationConfig();
+      for (const port of ports) assertPublicationPortAllowed(config, port);
+      if (verifiedProjects && !verifiedProjects.has(project)) {
+        quarantined.add(project);
+        continue;
+      }
       const info = await podRuntime.podInspect(project);
       if (!info?.running || !info?.ip || !info?.isolated) throw new Error("project pod is not isolated on its private network");
       for (const port of ports) publications.push({ project, ip: info.ip, ...port });
@@ -1041,22 +1080,24 @@ async function regenerateCaddyPorts({ quarantineInvalid = false, verifiedProject
       console.error(`[reaper] quarantined published ports for ${project}:`, error.message);
     }
   }
-  if (new Set(publications.map((publication) => publication.subdomain)).size > MAX_GLOBAL_PUBLISHED_PORTS) {
-    throw new Error(`published subdomains cannot exceed ${MAX_GLOBAL_PUBLISHED_PORTS} across the deployment`);
+  const keys = new Set(publications.map((publication) => publicationKey(config, publication)));
+  if (keys.size > MAX_GLOBAL_PUBLISHED_PORTS) {
+    throw new Error(`published routes cannot exceed ${MAX_GLOBAL_PUBLISHED_PORTS} across the deployment`);
   }
-  const ownersBySubdomain = new Map();
+  const ownersByRoute = new Map();
   for (const publication of publications) {
-    if (!ownersBySubdomain.has(publication.subdomain)) ownersBySubdomain.set(publication.subdomain, new Set());
-    ownersBySubdomain.get(publication.subdomain).add(publication.project);
+    const key = publicationKey(config, publication);
+    if (!ownersByRoute.has(key)) ownersByRoute.set(key, new Set());
+    ownersByRoute.get(key).add(publication.project);
   }
-  for (const [subdomain, owners] of ownersBySubdomain) {
+  for (const [key, owners] of ownersByRoute) {
     if (owners.size < 2) continue;
     for (const owner of owners) quarantined.add(owner);
-    console.error(`[reaper] quarantined conflicting published subdomain ${subdomain}`);
+    console.error(`[reaper] quarantined conflicting published ${config.mode === "ip" ? "host port" : "subdomain"} ${key}`);
   }
   const blocks = publications
     .filter((publication) => !quarantined.has(publication.project))
-    .map((port) => `https://${port.subdomain}.${apex} {\n\theader {\n\t\t-Server\n\t\tX-Content-Type-Options "nosniff"\n\t\tX-Frame-Options "SAMEORIGIN"\n\t\tReferrer-Policy "same-origin"\n\t\tX-Robots-Tag "noindex, nofollow, noarchive"\n\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"\n\t}\n\tforward_auth 127.0.0.1:4000 {\n\t\turi /api/auth/me\n\t}\n\treverse_proxy ${port.ip}:${port.containerPort} {\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_access=[^;]*" ""\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_csrf=[^;]*" ""\n\t\theader_down Set-Cookie "^reaper_(access|csrf)=.*$" ""\n\t}\n}`);
+    .map((port) => publishedCaddyBlock(config, port));
   const target = process.env.CADDY_DYNAMIC_FILE || "/caddy-dynamic/ports.caddy";
   await fs.mkdir(path.dirname(target), { recursive: true });
   const temporary = `${target}.tmp-${process.pid}`;
@@ -1075,7 +1116,7 @@ async function updateProjectPortsUnlocked(project, clean) {
       await atomicJson(path.join(reaperRoot(project), "ports.json"), clean);
       return { ports: clean };
     }
-    await assertPublishedSubdomainsAvailable(project, clean);
+    await assertPublishedRoutesAvailable(project, clean);
     const { ports: previous } = await getProjectPorts(project);
     try {
       await atomicJson(path.join(reaperRoot(project), "ports.json"), clean);

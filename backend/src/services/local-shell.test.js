@@ -12,6 +12,7 @@ process.env.VPS_PROJECTS = root;
 process.env.STATE_DIR = stateRoot;
 process.env.CADDY_DYNAMIC_FILE = caddyFile;
 process.env.APEX_DOMAIN = "example.test";
+process.env.REAPER_HOST = "example.test";
 
 const shell = await import("./local-shell.js");
 const protocol = await import("./terminal-protocol.js");
@@ -227,6 +228,10 @@ async function createProject(name) {
 
 function expectedPublishedBlock(subdomain, containerPort) {
   return `https://${subdomain}.example.test {\n\theader {\n\t\t-Server\n\t\tX-Content-Type-Options "nosniff"\n\t\tX-Frame-Options "SAMEORIGIN"\n\t\tReferrer-Policy "same-origin"\n\t\tX-Robots-Tag "noindex, nofollow, noarchive"\n\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"\n\t}\n\tforward_auth 127.0.0.1:4000 {\n\t\turi /api/auth/me\n\t}\n\treverse_proxy 172.30.1.9:${containerPort} {\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_access=[^;]*" ""\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_csrf=[^;]*" ""\n\t\theader_down Set-Cookie "^reaper_(access|csrf)=.*$" ""\n\t}\n}`;
+}
+
+function expectedIpPublishedBlock(containerPort) {
+  return `https://167.86.121.124:${containerPort} {\n\ttls internal\n\theader {\n\t\t-Server\n\t\tX-Content-Type-Options "nosniff"\n\t\tX-Frame-Options "SAMEORIGIN"\n\t\tReferrer-Policy "same-origin"\n\t\tX-Robots-Tag "noindex, nofollow, noarchive"\n\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"\n\t}\n\tforward_auth 127.0.0.1:4000 {\n\t\turi /api/auth/me\n\t}\n\treverse_proxy 172.30.1.9:${containerPort} {\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_access=[^;]*" ""\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_csrf=[^;]*" ""\n\t\theader_down Set-Cookie "^reaper_(access|csrf)=.*$" ""\n\t}\n}`;
 }
 
 function tick(ms = 0) { return new Promise((resolve) => setTimeout(resolve, ms)); }
@@ -718,6 +723,29 @@ test("published subdomains are globally unique across projects", async () => {
     /already published by project "ports-project"/
   );
   assert.deepEqual((await shell.getProjectPorts("ports-conflict")).ports, []);
+});
+
+test("IP publishing binds the container port on the Reaper host", async () => {
+  process.env.APEX_DOMAIN = "";
+  process.env.REAPER_HOST = "167.86.121.124";
+  try {
+    await createProject("ip-ports-project");
+    await assert.rejects(
+      () => shell.updateProjectPorts("ip-ports-project", [{ containerPort: 80, subdomain: "http" }]),
+      /available host port from 1024/
+    );
+    await shell.updateProjectPorts("ip-ports-project", [{ containerPort: 5173, subdomain: "app" }]);
+    assert.match(await fs.readFile(caddyFile, "utf8"), new RegExp(expectedIpPublishedBlock(5173).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+    await createProject("ip-port-conflict");
+    await assert.rejects(
+      () => shell.updateProjectPorts("ip-port-conflict", [{ containerPort: 5173, subdomain: "other" }]),
+      /host port 5173 is already published by project "ip-ports-project"/
+    );
+  } finally {
+    process.env.APEX_DOMAIN = "example.test";
+    process.env.REAPER_HOST = "example.test";
+  }
 });
 
 test("failed Caddy reload restores the prior published-port configuration", async () => {

@@ -19,6 +19,7 @@ services:
       COOKIE_SECURE: "true"
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
       APEX_DOMAIN: ${APEX_DOMAIN:-}
+      REAPER_HOST: ${REAPER_HOST:?Set REAPER_HOST in app/.env}
       # Docker daemon bind sources are host paths. Because this Compose project
       # is deployed at /app, ./workspace resolves to /app/workspace on the host.
       HOST_PROJECTS_ROOT: /app/workspace
@@ -51,7 +52,8 @@ services:
     restart: unless-stopped
     network_mode: host
     environment:
-      REAPER_HOST: ${APEX_DOMAIN:?Set APEX_DOMAIN in app/.env}
+      REAPER_HOST: ${REAPER_HOST:?Set REAPER_HOST in app/.env}
+      REAPER_TLS: ${REAPER_TLS:-internal}
     depends_on:
       - backend
     volumes:
