@@ -3,7 +3,6 @@ import { A } from "@solidjs/router";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { SearchAddon } from "@xterm/addon-search";
 import { api, invalidateTerminalCsrfToken, terminalCsrfToken, terminalWebSocketUrl } from "../api.js";
 import {
@@ -20,6 +19,12 @@ import {
   encodePing,
   decodePing
 } from "../terminal-protocol.js";
+import {
+  FIT_VERIFY_DELAYS_MS,
+  LIVE_WRITE_BATCH_MS,
+  joinTerminalPayloads,
+  shouldRefitTerminal
+} from "../terminal-rendering.js";
 import "@xterm/xterm/css/xterm.css";
 
 const encoder = new TextEncoder();
@@ -68,7 +73,6 @@ export function ProjectTerminal(props) {
   let term;
   let fit;
   let search;
-  let webgl;
   let searchResultDisposable;
   let ws;
   let outsideState = [];
@@ -84,6 +88,8 @@ export function ProjectTerminal(props) {
   let missedPongs = 0;
   let fitFrame;
   let resizeTimer;
+  let fitVerificationTimers = [];
+  let fontLoadingHandler;
   let toolNoticeTimer;
   let fontSizeCustomized = false;
   let requestCounter = 0;
@@ -113,7 +119,7 @@ export function ProjectTerminal(props) {
   const [findResults, setFindResults] = createSignal({ resultIndex: 0, resultCount: 0 });
   const [fontSize, setFontSize] = createSignal(DEFAULT_FONT_SIZE);
   const [dimensions, setDimensions] = createSignal({ cols: 80, rows: 24 });
-  const [renderer, setRenderer] = createSignal("Canvas");
+  const [renderer] = createSignal("Canvas");
   const [toolNotice, setToolNotice] = createSignal("");
 
   const [sessions, setSessions] = createSignal([]);
@@ -271,10 +277,18 @@ export function ProjectTerminal(props) {
     return true;
   }
 
+  function clearPendingLiveWrites(stream) {
+    if (!stream) return;
+    clearTimeout(stream.liveWriteTimer);
+    stream.liveWriteTimer = undefined;
+    stream.liveWriteQueue.length = 0;
+  }
+
   function closeStream(streamId = activeStreamId) {
     if (!streamId) return;
     const wasActive = activeStreamId === streamId;
     const stream = streams.get(streamId);
+    clearPendingLiveWrites(stream);
     if (stream) stream.closed = true;
     send(TYPES.CLOSE_STREAM, { streamId, sequence: 0, payload: new Uint8Array() });
     streams.delete(streamId);
@@ -315,15 +329,48 @@ export function ProjectTerminal(props) {
     }
   }
 
-  function fitTerminal() {
+  function clearFitVerificationTimers() {
+    for (const timer of fitVerificationTimers) clearTimeout(timer);
+    fitVerificationTimers = [];
+  }
+
+  function verifyTerminalFit() {
+    if (!fit || !term || !hostRef || hostRef.clientWidth < 1 || hostRef.clientHeight < 1) return;
+    let proposed;
+    try { proposed = fit.proposeDimensions?.(); } catch { return; }
+    const screen = terminalCanvasRef?.querySelector?.(".xterm-screen");
+    const screenRect = screen?.getBoundingClientRect?.();
+    if (!proposed || !screenRect || !shouldRefitTerminal({
+      current: { cols: term.cols, rows: term.rows },
+      proposed,
+      hostRect: { width: hostRef.clientWidth, height: hostRef.clientHeight },
+      screenRect: { width: screenRect.width, height: screenRect.height }
+    })) return;
+    fitTerminal({ verify: false });
+  }
+
+  function queueFitVerification() {
+    clearFitVerificationTimers();
+    for (const delay of FIT_VERIFY_DELAYS_MS) {
+      const timer = setTimeout(() => {
+        fitVerificationTimers = fitVerificationTimers.filter((candidate) => candidate !== timer);
+        if (!disposed && props.active !== false) verifyTerminalFit();
+      }, delay);
+      fitVerificationTimers.push(timer);
+    }
+  }
+
+  function fitTerminal({ verify = true } = {}) {
     if (!fit || !term || !hostRef || hostRef.clientWidth < 1 || hostRef.clientHeight < 1) return;
     try { fit.fit(); } catch {}
     setDimensions({ cols: term.cols, rows: term.rows });
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(sendResize, 80);
+    if (verify) queueFitVerification();
   }
 
   function scheduleFit() {
+    clearFitVerificationTimers();
     if (fitFrame) cancelAnimationFrame(fitFrame);
     fitFrame = requestAnimationFrame(() => {
       fitFrame = 0;
@@ -394,11 +441,15 @@ export function ProjectTerminal(props) {
     });
   }
 
-  function acknowledgeConsumed(stream, sequence) {
+  function acknowledgeConsumedBatch(stream, frames) {
     if (stream.closed || streams.get(stream.streamId) !== stream) return;
-    stream.consumed.add(sequence);
+    for (const frame of frames) stream.consumed.add(frame.sequence);
     while (stream.consumed.delete(stream.highestConsumed + 1)) stream.highestConsumed += 1;
     send(TYPES.ACK, { streamId: stream.streamId, sequence: stream.highestConsumed, payload: new Uint8Array() });
+  }
+
+  function acknowledgeConsumed(stream, sequence) {
+    acknowledgeConsumedBatch(stream, [{ sequence }]);
   }
 
   function writeTerminalFrame(stream, frame, isHistory) {
@@ -415,6 +466,28 @@ export function ProjectTerminal(props) {
     };
     if (stream.streamId === activeStreamId && stream.sessionName === selectedName() && term) term.write(frame.payload, complete);
     else complete();
+  }
+
+  function flushLiveTerminalFrames(stream) {
+    stream.liveWriteTimer = undefined;
+    const frames = stream.liveWriteQueue.splice(0);
+    if (!frames.length || stream.closed) return;
+    const complete = () => acknowledgeConsumedBatch(stream, frames);
+    if (stream.streamId === activeStreamId && stream.sessionName === selectedName() && term) {
+      term.write(joinTerminalPayloads(frames.map((frame) => frame.payload)), complete);
+    } else complete();
+  }
+
+  function queueLiveTerminalFrame(stream, frame) {
+    if (stream.closed) return;
+    stream.liveWriteQueue.push(frame);
+    if (stream.liveWriteTimer !== undefined) return;
+    if (document.visibilityState !== "visible") {
+      stream.liveWriteTimer = 0;
+      queueMicrotask(() => flushLiveTerminalFrames(stream));
+      return;
+    }
+    stream.liveWriteTimer = setTimeout(() => flushLiveTerminalFrames(stream), LIVE_WRITE_BATCH_MS);
   }
 
   function handleOpened(frame) {
@@ -443,6 +516,8 @@ export function ProjectTerminal(props) {
       highestConsumed: frame.sequence,
       consumed: new Set(),
       focusOnReady: pending.focus,
+      liveWriteQueue: [],
+      liveWriteTimer: undefined,
       closed: false
     };
     streams.set(frame.streamId, stream);
@@ -605,7 +680,7 @@ export function ProjectTerminal(props) {
       }
       case TYPES.OUTPUT: {
         const stream = streams.get(frame.streamId);
-        if (stream) writeTerminalFrame(stream, frame, false);
+        if (stream) queueLiveTerminalFrame(stream, frame);
         return;
       }
       case TYPES.CLOSE_STREAM: {
@@ -1168,6 +1243,15 @@ export function ProjectTerminal(props) {
       searchResultDisposable = search.onDidChangeResults((result) => setFindResults(result));
     } catch { search = undefined; }
     term.open(terminalCanvasRef);
+    if (document.fonts) {
+      fontLoadingHandler = () => {
+        if (disposed || !term) return;
+        try { term.options.fontFamily = term.options.fontFamily; } catch {}
+        scheduleFit();
+      };
+      document.fonts.addEventListener?.("loadingdone", fontLoadingHandler);
+      void document.fonts.ready.then(fontLoadingHandler).catch(() => {});
+    }
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
       const modifier = event.ctrlKey || event.metaKey;
@@ -1211,19 +1295,6 @@ export function ProjectTerminal(props) {
       }
       return true;
     });
-    try {
-      webgl = new WebglAddon();
-      webgl.onContextLoss(() => {
-        try { webgl?.dispose(); } catch {}
-        webgl = undefined;
-        setRenderer("Canvas");
-      });
-      term.loadAddon(webgl);
-      setRenderer("WebGL");
-    } catch {
-      webgl = undefined;
-      setRenderer("Canvas");
-    }
 
     const resizeObserver = new ResizeObserver(scheduleFit);
     resizeObserver.observe(workspaceRef);
@@ -1283,6 +1354,8 @@ export function ProjectTerminal(props) {
       clearTimeout(reconnectTimer);
       clearTimeout(toolNoticeTimer);
       clearTimeout(resizeTimer);
+      clearFitVerificationTimers();
+      document.fonts?.removeEventListener?.("loadingdone", fontLoadingHandler);
       clearInterval(heartbeatTimer);
       if (fitFrame) cancelAnimationFrame(fitFrame);
       resizeObserver.disconnect();
@@ -1296,7 +1369,6 @@ export function ProjectTerminal(props) {
       window.visualViewport?.removeEventListener("resize", onResize);
       try { closeAllStreams(); } catch {}
       try { ws?.close(1000, "Terminal unmounted"); } catch {}
-      try { webgl?.dispose(); } catch {}
       try { term?.dispose(); } catch {}
     });
   });
