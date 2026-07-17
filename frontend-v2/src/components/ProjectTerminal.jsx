@@ -307,11 +307,12 @@ export function ProjectTerminal(props) {
   }
 
   function desiredDimensions() {
+    if (term?.cols > 0 && term?.rows > 0) return { cols: term.cols, rows: term.rows };
     try {
       const proposed = fit?.proposeDimensions?.();
       if (proposed?.cols > 0 && proposed?.rows > 0) return proposed;
     } catch {}
-    return { cols: term?.cols || 80, rows: term?.rows || 24 };
+    return { cols: 80, rows: 24 };
   }
 
   function sendResize() {
@@ -342,6 +343,23 @@ export function ProjectTerminal(props) {
       const current = streams.get(activeStreamId);
       if (current) flushLiveTerminalFrames(current);
     }, terminalResizeSettleDelay(roundTripMs()));
+  }
+  function applyRemoteViewport(stream, cols, rows) {
+    cols = Number(cols);
+    rows = Number(rows);
+    if (!Number.isInteger(cols) || cols < 1 || !Number.isInteger(rows) || rows < 1) return;
+    stream.renderCols = cols;
+    stream.renderRows = rows;
+    if (
+      stream.streamId !== activeStreamId ||
+      stream.sessionName !== selectedName() ||
+      !term
+    ) return;
+    if (term.cols !== cols || term.rows !== rows) {
+      beginResizeOutputSettlement();
+      term.resize(cols, rows);
+    }
+    setDimensions({ cols, rows });
   }
 
   function clearFitVerificationTimers() {
@@ -533,6 +551,8 @@ export function ProjectTerminal(props) {
       inputSequence: 0,
       cols: pending.cols,
       rows: pending.rows,
+      renderCols: Number(message.cols) || pending.cols,
+      renderRows: Number(message.rows) || pending.rows,
       pendingHistoryWrites: 0,
       readyReceived: false,
       highestConsumed: frame.sequence,
@@ -544,6 +564,7 @@ export function ProjectTerminal(props) {
     };
     streams.set(frame.streamId, stream);
     activeStreamId = frame.streamId;
+    applyRemoteViewport(stream, stream.renderCols, stream.renderRows);
     setDegraded(Boolean(message.degraded));
     const next = sessions().map((session) => session.name === message.sessionName
       ? { ...session, state: "running" }
@@ -637,12 +658,15 @@ export function ProjectTerminal(props) {
     applyDeletedSession(session, { recordRevision: false });
   }
 
-  function handleStatus(frame) {
+  function handleStatus(frame, stream = null) {
     const message = decodeJson(frame.payload);
     if (message.code === "INVALID_HELLO" && /authentication/i.test(message.message || "")) {
       refreshCsrfOnReconnect = true;
     }
     if (message.degraded != null) setDegraded(Boolean(message.degraded));
+    if (message.state === "viewport" && stream) {
+      applyRemoteViewport(stream, message.cols, message.rows);
+    }
     if (message.state === "error" || (frame.flags & FLAGS.ERROR)) {
       inputEnabled = false;
       setOpening(false);
@@ -695,6 +719,8 @@ export function ProjectTerminal(props) {
       case TYPES.READY: {
         const stream = streams.get(frame.streamId);
         if (!stream) return;
+        const ready = decodeJson(frame.payload);
+        applyRemoteViewport(stream, ready.cols, ready.rows);
         stream.readyReceived = true;
         acknowledgeConsumed(stream, frame.sequence);
         maybeEnableInput(stream);
@@ -722,7 +748,7 @@ export function ProjectTerminal(props) {
       case TYPES.STATUS: {
         const stream = frame.streamId ? streams.get(frame.streamId) : null;
         if (frame.streamId && !stream) return;
-        if (!frame.streamId || stream.streamId === activeStreamId) handleStatus(frame);
+        if (!frame.streamId || stream.streamId === activeStreamId) handleStatus(frame, stream);
         if (stream) acknowledgeConsumed(stream, frame.sequence);
         return;
       }

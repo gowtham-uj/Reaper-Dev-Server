@@ -1342,23 +1342,49 @@ function detachSessionViewers(project, name, code) {
   for (const stream of [...streamViewerSet(project, name)]) detachStream(stream.connection, stream.id, code, true);
 }
 
+function sessionViewport(viewers) {
+  let cols = MAX_TERMINAL_COLS;
+  let rows = MAX_TERMINAL_ROWS;
+  let found = false;
+  for (const viewer of viewers) {
+    if (viewer.closed) continue;
+    found = true;
+    cols = Math.min(cols, viewer.cols);
+    rows = Math.min(rows, viewer.rows);
+  }
+  return found ? { cols, rows } : { cols: 1, rows: 1 };
+}
+
+function notifySessionViewport(viewer, viewport) {
+  if (!viewer.ready || viewer.closed) return;
+  sendJson(viewer.connection, TYPES.STATUS, viewer.id, {
+    state: "viewport",
+    cols: viewport.cols,
+    rows: viewport.rows
+  });
+}
+
+function applySessionViewport(viewers, viewport) {
+  for (const viewer of viewers) {
+    try { viewer.pty?.resize(viewport.cols, viewport.rows); } catch {}
+    viewer.fallback?.resize(viewport.cols, viewport.rows);
+  }
+  for (const viewer of viewers) notifySessionViewport(viewer, viewport);
+}
+
 function resizeSession(stream, cols, rows, { force = false } = {}) {
   cols = Math.max(1, Math.min(MAX_TERMINAL_COLS, Number(cols) || 1));
   rows = Math.max(1, Math.min(MAX_TERMINAL_ROWS, Number(rows) || 1));
-  const set = streamViewerSet(stream.project, stream.name);
-  let previousMaxCols = 1, previousMaxRows = 1;
-  for (const viewer of set) {
-    previousMaxCols = Math.max(previousMaxCols, viewer.cols);
-    previousMaxRows = Math.max(previousMaxRows, viewer.rows);
+  const viewers = streamViewerSet(stream.project, stream.name);
+  const previous = sessionViewport(viewers);
+  stream.cols = cols;
+  stream.rows = rows;
+  const viewport = sessionViewport(viewers);
+  if (!force && previous.cols === viewport.cols && previous.rows === viewport.rows) {
+    notifySessionViewport(stream, viewport);
+    return false;
   }
-  stream.cols = cols; stream.rows = rows;
-  let maxCols = 1, maxRows = 1;
-  for (const viewer of set) {
-    maxCols = Math.max(maxCols, viewer.cols);
-    maxRows = Math.max(maxRows, viewer.rows);
-  }
-  if (!force && previousMaxCols === maxCols && previousMaxRows === maxRows) return false;
-  for (const viewer of set) { try { viewer.pty?.resize(maxCols, maxRows); } catch {} viewer.fallback?.resize(maxCols, maxRows); }
+  applySessionViewport(viewers, viewport);
   return true;
 }
 
@@ -1618,7 +1644,7 @@ function terminalModeBaseline(value) {
   );
 }
 
-function startControlHandoff(stream) {
+function startControlHandoff(stream, viewport = { cols: stream.cols, rows: stream.rows }) {
   const rawPty = podRuntime.podExecPty(stream.project, [
     "env", stream.viewerMarker, "sh", "-c", CAPTURE_POD_SESSION_SCRIPT,
     "reaper-capture-session",
@@ -1628,7 +1654,7 @@ function startControlHandoff(stream) {
     podLogPath(stream.name),
     `/work/.reaper/logs/${stream.name}.log`,
     `cat >> ${shellQuote(podLogPath(stream.name))}`
-  ], { cols: stream.cols, rows: stream.rows });
+  ], { cols: viewport.cols, rows: viewport.rows });
   stream.pty = {
     pause: rawPty.pause ? () => rawPty.pause() : undefined,
     resume: rawPty.resume ? () => rawPty.resume() : undefined,
@@ -1717,7 +1743,7 @@ function startControlHandoff(stream) {
   const issueInitialResize = () => {
     handoffPhase = "resize";
     try {
-      writeControlResize(stream.cols, stream.rows);
+      writeControlResize(viewport.cols, viewport.rows);
     } catch (error) {
       fail(error);
     }
@@ -1968,13 +1994,16 @@ async function openStream(connection, request, reservation) {
   stream.resizeTimer = null;
   connection.streams.set(id, stream);
   streamViewerSet(project, name).add(stream);
+  let viewport = sessionViewport(streamViewerSet(project, name));
   if (podMode) {
     stream.viewerMarker = `REAPER_VIEWER_ID=${randomUUID()}`;
     let repaired = false;
     try {
       while (true) {
         try {
-          history = await startControlHandoff(stream);
+          viewport = sessionViewport(streamViewerSet(project, name));
+          applySessionViewport(streamViewerSet(project, name), viewport);
+          history = await startControlHandoff(stream, viewport);
           break;
         } catch (error) {
           stream.restartingControl = true;
@@ -2001,7 +2030,20 @@ async function openStream(connection, request, reservation) {
     stream.fallback.attach(stream.viewer);
   }
   broadcastSessionEvent("activity", project, stream.entry);
-  sendJson(connection, TYPES.OPENED, id, { requestId: request.requestId, project, sessionName: name, title: stream.entry.title, degraded: !podMode });
+  const completedViewport = sessionViewport(streamViewerSet(project, name));
+  if (completedViewport.cols !== viewport.cols || completedViewport.rows !== viewport.rows) {
+    applySessionViewport(streamViewerSet(project, name), completedViewport);
+  }
+  viewport = completedViewport;
+  sendJson(connection, TYPES.OPENED, id, {
+    requestId: request.requestId,
+    project,
+    sessionName: name,
+    title: stream.entry.title,
+    degraded: !podMode,
+    cols: viewport.cols,
+    rows: viewport.rows
+  });
   if (!history.length) {
     while (!accountAndSend(stream, TYPES.HISTORY, EMPTY_BUFFER, FLAGS.FINAL)) {
       if (!await waitForStreamCapacity(stream, 0)) return;
@@ -2018,7 +2060,7 @@ async function openStream(connection, request, reservation) {
     }
   }
   if (stream.closed) return;
-  sendJson(connection, TYPES.READY, id, { cols, rows });
+  sendJson(connection, TYPES.READY, id, { cols: viewport.cols, rows: viewport.rows });
   stream.ready = true;
   stream.replayingHistory = false;
   updateBackpressure(stream);

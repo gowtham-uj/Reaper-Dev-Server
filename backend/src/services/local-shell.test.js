@@ -465,6 +465,56 @@ test("RTP open orders history before ready/output and disconnect only detaches",
   assert.equal(pty.argv[5], "reaper-capture-session");
 });
 
+test("concurrent viewers share the smallest canonical pane viewport", async () => {
+  await createProject("shared-viewport");
+  await shell.openProjectShell({ path: "shared-viewport", sessionName: "main" });
+  const wss = new EventEmitter();
+  shell.attachTerminalWebSocket(wss, { verifyCsrf: (_req, token) => token === "csrf" });
+
+  const first = await attachFakeTerminal(wss, "shared-viewport", "viewport-first", { cols: 100, rows: 30 });
+  const firstStreamId = first.frames.find((frame) => frame.type === protocol.TYPES.OPENED).streamId;
+  const firstPty = fake.ptys.at(-1);
+  const second = await attachFakeTerminal(wss, "shared-viewport", "viewport-second", { cols: 140, rows: 40 });
+  const secondOpened = second.frames.find((frame) => frame.type === protocol.TYPES.OPENED);
+  const secondStreamId = secondOpened.streamId;
+  const secondPty = fake.ptys.at(-1);
+
+  assert.deepEqual(secondPty.options, { cols: 100, rows: 30 });
+  assert.deepEqual(protocol.decodeJson(secondOpened.payload), {
+    requestId: "viewport-second",
+    project: "shared-viewport",
+    sessionName: "main",
+    title: "main",
+    degraded: false,
+    cols: 100,
+    rows: 30
+  });
+
+  first.emit("message", protocol.encodeFrame({
+    type: protocol.TYPES.RESIZE,
+    streamId: firstStreamId,
+    sequence: 0,
+    payload: protocol.encodeResize(120, 35)
+  }), true);
+  await waitFor(() =>
+    firstPty.resizes.some(([cols, rows]) => cols === 120 && rows === 35) &&
+    secondPty.resizes.some(([cols, rows]) => cols === 120 && rows === 35)
+  );
+  const latestViewport = (ws) => protocol.decodeJson(
+    ws.frames.filter((frame) => frame.type === protocol.TYPES.STATUS).at(-1).payload
+  );
+  assert.deepEqual(latestViewport(first), { state: "viewport", cols: 120, rows: 35 });
+  assert.deepEqual(latestViewport(second), { state: "viewport", cols: 120, rows: 35 });
+
+  first.close(1000, "smaller viewer left");
+  await waitFor(() => {
+    const viewport = latestViewport(second);
+    return viewport.cols === 140 && viewport.rows === 40;
+  });
+  assert.deepEqual(latestViewport(second), { state: "viewport", cols: 140, rows: 40 });
+  second.close(1000, "done");
+});
+
 test("pod input bursts are coalesced in order, serialized, and update live activity metadata", async () => {
   await createProject("input-order");
   await shell.openProjectShell({ path: "input-order", sessionName: "main" });
