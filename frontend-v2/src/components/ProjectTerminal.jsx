@@ -75,6 +75,7 @@ export function ProjectTerminal(props) {
   let fit;
   let search;
   let searchResultDisposable;
+  let terminalEventDisposables = [];
   let ws;
   let outsideState = [];
   let documentKeyHandler;
@@ -123,6 +124,9 @@ export function ProjectTerminal(props) {
   const [dimensions, setDimensions] = createSignal({ cols: 80, rows: 24 });
   const [renderer] = createSignal("Canvas");
   const [toolNotice, setToolNotice] = createSignal("");
+  const [mobileControlsOpen, setMobileControlsOpen] = createSignal(false);
+  const [mobileScrollMaximum, setMobileScrollMaximum] = createSignal(0);
+  const [mobileScrollPosition, setMobileScrollPosition] = createSignal(0);
 
   const [sessions, setSessions] = createSignal([]);
   const [selectedName, setSelectedName] = createSignal("");
@@ -403,6 +407,7 @@ export function ProjectTerminal(props) {
       if (!terminalFitNeedsAnotherPass()) break;
     }
     setDimensions({ cols: term.cols, rows: term.rows });
+    syncMobileScroll();
     beginResizeOutputSettlement();
     sendResize();
     if (verify) queueFitVerification();
@@ -429,6 +434,7 @@ export function ProjectTerminal(props) {
       if (disposed || resetSequence !== terminalResetSequence) return;
       term?.reset();
       term?.clear();
+      syncMobileScroll();
     });
   }
 
@@ -889,6 +895,47 @@ export function ProjectTerminal(props) {
     sendInputBytes(encoder.encode(data));
   }
 
+  function syncMobileScroll(position) {
+    const buffer = term?.buffer?.active;
+    if (!buffer) {
+      setMobileScrollMaximum(0);
+      setMobileScrollPosition(0);
+      return;
+    }
+    const maximum = Math.max(0, Math.round(Number(buffer.baseY) || 0));
+    const nextPosition = position == null ? Number(buffer.viewportY) : Number(position);
+    setMobileScrollMaximum(maximum);
+    setMobileScrollPosition(Math.max(0, Math.min(maximum, Math.round(nextPosition) || 0)));
+  }
+
+  function inputTerminalKey(sequence) {
+    if (!connected() || !sequence || !term) return;
+    term.clearSelection();
+    term.scrollToBottom();
+    syncMobileScroll();
+    term.input(sequence, false);
+  }
+
+  function inputTerminalArrow(finalByte) {
+    const prefix = term?.modes?.applicationCursorKeysMode ? "\x1bO" : "\x1b[";
+    inputTerminalKey(`${prefix}${finalByte}`);
+  }
+
+  function scrollTerminal(action) {
+    if (!term) return;
+    if (action === "top") term.scrollToTop();
+    else if (action === "page-up") term.scrollPages(-1);
+    else if (action === "page-down") term.scrollPages(1);
+    else if (action === "bottom") term.scrollToBottom();
+    syncMobileScroll();
+  }
+
+  function setTerminalScrollPosition(value) {
+    if (!term) return;
+    term.scrollToLine(Math.max(0, Math.min(mobileScrollMaximum(), Math.round(Number(value)) || 0)));
+    syncMobileScroll();
+  }
+
   async function createSession(event) {
     event?.preventDefault();
     const name = newSessionName().trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -1204,6 +1251,7 @@ export function ProjectTerminal(props) {
 
   function clearView() {
     term?.clear();
+    syncMobileScroll();
     notifyTool("Terminal view cleared. Session history is still persistent.");
     term?.focus();
   }
@@ -1350,8 +1398,13 @@ export function ProjectTerminal(props) {
     const onResize = () => scheduleFit();
     window.addEventListener("resize", onResize);
     window.visualViewport?.addEventListener("resize", onResize);
-    term.onData(queueInput);
-    term.onSelectionChange(() => setHasSelection(term.hasSelection()));
+    terminalEventDisposables = [
+      term.onData(queueInput),
+      term.onSelectionChange(() => setHasSelection(term.hasSelection())),
+      term.onScroll((position) => syncMobileScroll(position)),
+      term.onWriteParsed(() => syncMobileScroll())
+    ];
+    syncMobileScroll();
     const onMobileChange = (event) => {
       if (fontSizeCustomized) return;
       const next = event.matches ? MOBILE_FONT_SIZE : DEFAULT_FONT_SIZE;
@@ -1408,6 +1461,7 @@ export function ProjectTerminal(props) {
       if (fitFrame) cancelAnimationFrame(fitFrame);
       resizeObserver.disconnect();
       searchResultDisposable?.dispose();
+      for (const disposable of terminalEventDisposables.splice(0)) disposable.dispose();
       mobile.removeEventListener?.("change", onMobileChange);
       document.removeEventListener("keydown", documentKeyHandler);
       document.removeEventListener("focusin", documentFocusHandler);
@@ -1628,9 +1682,76 @@ export function ProjectTerminal(props) {
             aria-labelledby={selectedName() ? tabId(selectedName()) : undefined}
             aria-label={selectedName() ? undefined : `Interactive project terminal for ${props.name}`}
             aria-busy={opening()}
-            onClick={() => term?.focus()}
+            onClick={(event) => {
+              if (event.target instanceof Element && event.target.closest(".terminal-mobile-overlay")) return;
+              term?.focus();
+            }}
           >
             <div ref={terminalCanvasRef} class="terminal-host__canvas"></div>
+            <div
+              class="terminal-scroll-control terminal-mobile-overlay"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <label class="sr-only" for={`${panelId()}-mobile-scroll`}>Terminal scroll position</label>
+              <output class="terminal-scroll-control__value" for={`${panelId()}-mobile-scroll`}>
+                {mobileScrollPosition()} / {mobileScrollMaximum()}
+              </output>
+              <input
+                id={`${panelId()}-mobile-scroll`}
+                class="terminal-scroll-control__range"
+                type="range"
+                min="0"
+                max={mobileScrollMaximum()}
+                value={mobileScrollPosition()}
+                disabled={mobileScrollMaximum() === 0}
+                aria-valuetext={`Line ${mobileScrollPosition()} of ${mobileScrollMaximum()}`}
+                onInput={(event) => setTerminalScrollPosition(event.currentTarget.value)}
+              />
+            </div>
+            <details
+              class="terminal-mobile-controls terminal-mobile-overlay"
+              onClick={(event) => event.stopPropagation()}
+              onToggle={(event) => setMobileControlsOpen(event.currentTarget.open)}
+            >
+              <summary
+                class="terminal-mobile-controls__trigger"
+                aria-label={mobileControlsOpen() ? "Close mobile terminal controls" : "Open mobile terminal controls"}
+              >
+                <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+                  <rect x="3" y="5" width="18" height="14" rx="2"></rect>
+                  <path d="M7 9h2M11 9h2M15 9h2M7 13h2M11 13h6"></path>
+                </svg>
+              </summary>
+              <div class="terminal-mobile-controls__popover">
+                <div class="terminal-mobile-controls__section terminal-mobile-controls__section--arrows">
+                  <span class="terminal-mobile-controls__title">Cursor keys</span>
+                  <div class="terminal-mobile-controls__dpad" role="group" aria-label="Terminal cursor keys">
+                    <button class="terminal-mobile-controls__key terminal-mobile-controls__key--up" type="button" disabled={!connected()} onClick={() => inputTerminalArrow("A")} aria-label="Send Up Arrow to terminal">↑</button>
+                    <button class="terminal-mobile-controls__key terminal-mobile-controls__key--left" type="button" disabled={!connected()} onClick={() => inputTerminalArrow("D")} aria-label="Send Left Arrow to terminal">←</button>
+                    <button class="terminal-mobile-controls__key terminal-mobile-controls__key--down" type="button" disabled={!connected()} onClick={() => inputTerminalArrow("B")} aria-label="Send Down Arrow to terminal">↓</button>
+                    <button class="terminal-mobile-controls__key terminal-mobile-controls__key--right" type="button" disabled={!connected()} onClick={() => inputTerminalArrow("C")} aria-label="Send Right Arrow to terminal">→</button>
+                  </div>
+                </div>
+                <div class="terminal-mobile-controls__section">
+                  <span class="terminal-mobile-controls__title">Terminal input</span>
+                  <div class="terminal-mobile-controls__key-grid" role="group" aria-label="Terminal special keys">
+                    <button class="terminal-mobile-controls__key" type="button" disabled={!connected()} onClick={() => inputTerminalKey("\x1b")} aria-label={`Send Escape to ${sessionLabel(activeSession())}`}>Esc</button>
+                    <button class="terminal-mobile-controls__key" type="button" disabled={!connected()} onClick={() => inputTerminalKey("\x03")} aria-label={`Send Control+C to ${sessionLabel(activeSession())}`}>Ctrl+C</button>
+                    <button class="terminal-mobile-controls__key" type="button" disabled={!connected()} onClick={() => inputTerminalKey("\x04")} aria-label={`Send Control+D to ${sessionLabel(activeSession())}`}>Ctrl+D</button>
+                    <button class="terminal-mobile-controls__key" type="button" disabled={!connected()} onClick={() => inputTerminalKey("\r")} aria-label={`Send Enter to ${sessionLabel(activeSession())}`}>Enter</button>
+                  </div>
+                </div>
+                <div class="terminal-mobile-controls__section">
+                  <span class="terminal-mobile-controls__title">Scrollback</span>
+                  <div class="terminal-mobile-controls__scroll-grid" role="group" aria-label="Terminal scrollback controls">
+                    <button class="terminal-mobile-controls__key" type="button" disabled={mobileScrollPosition() === 0} onClick={() => scrollTerminal("top")} aria-label="Scroll terminal to top">Top</button>
+                    <button class="terminal-mobile-controls__key" type="button" disabled={mobileScrollPosition() === 0} onClick={() => scrollTerminal("page-up")} aria-label="Scroll terminal up one page">Page ↑</button>
+                    <button class="terminal-mobile-controls__key" type="button" disabled={mobileScrollPosition() >= mobileScrollMaximum()} onClick={() => scrollTerminal("page-down")} aria-label="Scroll terminal down one page">Page ↓</button>
+                    <button class="terminal-mobile-controls__key" type="button" disabled={mobileScrollPosition() >= mobileScrollMaximum()} onClick={() => scrollTerminal("bottom")} aria-label="Scroll terminal to bottom">Bottom</button>
+                  </div>
+                </div>
+              </div>
+            </details>
             <Show when={!connected()}>
               <div class="terminal-state" classList={{ "terminal-state--empty": listState() === "ready" && sessions().length === 0 }}>
                 <div
@@ -1682,12 +1803,6 @@ export function ProjectTerminal(props) {
                   <button class="terminal-control terminal-control--key" type="button" disabled={!connected()} onClick={() => queueInput("\r")} aria-label={`Send Enter to ${sessionLabel(activeSession())}`}>Enter</button>
                 </div>
               </details>
-              <div class="terminal-touch-keys" role="group" aria-label="Send a key to the terminal">
-                <button class="terminal-control terminal-control--key" type="button" disabled={!connected()} onClick={() => queueInput("\x03")} aria-label={`Send Control+C to ${sessionLabel(activeSession())}`}>Ctrl+C</button>
-                <button class="terminal-control terminal-control--key" type="button" disabled={!connected()} onClick={() => queueInput("\x04")} aria-label={`Send Control+D to ${sessionLabel(activeSession())}`}>Ctrl+D</button>
-                <button class="terminal-control terminal-control--key" type="button" disabled={!connected()} onClick={() => queueInput("\x1b")} aria-label={`Send Escape to ${sessionLabel(activeSession())}`}>Esc</button>
-                <button class="terminal-control terminal-control--key" type="button" disabled={!connected()} onClick={() => queueInput("\r")} aria-label={`Send Enter to ${sessionLabel(activeSession())}`}>Enter</button>
-              </div>
             </div>
             <span class="terminal-controls__hint">
               <Show when={toolNotice()}>

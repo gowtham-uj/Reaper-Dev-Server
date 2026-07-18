@@ -1079,6 +1079,174 @@ input, textarea, select { font: inherit; color: inherit; }
   box-shadow: var(--shadow-2);
 }
 .terminal-touch-keys { display: none; }
+.terminal-scroll-control,
+.terminal-mobile-controls {
+  display: none;
+}
+.terminal-scroll-control {
+  --terminal-touch-target: 44px;
+  position: absolute;
+  z-index: 10;
+  inset-block: var(--s-3) calc(var(--s-9) + var(--s-2));
+  inset-inline-end: max(env(safe-area-inset-right, 0px), 0px);
+  inline-size: var(--terminal-touch-target);
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.terminal-scroll-control__value {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-end: calc(100% + var(--s-1));
+  padding: var(--s-1) var(--s-2);
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-1);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  line-height: 1;
+  white-space: nowrap;
+}
+.terminal-scroll-control__range {
+  inline-size: 100%;
+  block-size: 100%;
+  min-block-size: var(--terminal-touch-target);
+  margin: 0;
+  accent-color: var(--accent);
+  background: transparent;
+  cursor: ns-resize;
+  direction: ltr;
+  pointer-events: auto;
+  touch-action: none;
+  writing-mode: vertical-lr;
+}
+.terminal-scroll-control__range:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+.terminal-mobile-controls {
+  --terminal-touch-target: 44px;
+  position: absolute;
+  z-index: 12;
+  inset-inline-end: calc(max(env(safe-area-inset-right, 0px), 0px) + var(--s-3));
+  inset-block-end: var(--s-3);
+}
+.terminal-mobile-controls > summary {
+  list-style: none;
+}
+.terminal-mobile-controls > summary::-webkit-details-marker {
+  display: none;
+}
+.terminal-mobile-controls__trigger {
+  display: grid;
+  inline-size: var(--terminal-touch-target);
+  block-size: var(--terminal-touch-target);
+  place-items: center;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.terminal-mobile-controls__trigger svg {
+  inline-size: var(--s-6);
+  block-size: var(--s-6);
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+.terminal-mobile-controls[open] > .terminal-mobile-controls__trigger {
+  color: var(--text-1);
+  background: var(--surface-3);
+}
+.terminal-mobile-controls__popover {
+  position: fixed;
+  z-index: 30;
+  inset-inline-end: calc(max(env(safe-area-inset-right, 0px), 0px) + var(--s-2));
+  inset-block-end: calc(max(var(--s-9), env(safe-area-inset-bottom, 0px)) + var(--s-2));
+  display: none;
+  inline-size: min(288px, calc(100vw - var(--s-4) - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
+  max-block-size: calc(100vh - var(--s-9) - var(--s-10));
+  max-block-size: calc(100dvh - var(--s-9) - var(--s-10));
+  gap: var(--s-2);
+  padding: var(--s-2);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  color: var(--text-1);
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2);
+}
+.terminal-mobile-controls[open] > .terminal-mobile-controls__popover {
+  display: grid;
+}
+.terminal-workspace--fullscreen .terminal-mobile-controls__popover {
+  inset-block-end: calc(env(safe-area-inset-bottom, 0px) + var(--s-2));
+  max-block-size: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - var(--s-4));
+  max-block-size: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - var(--s-4));
+}
+.terminal-mobile-controls__section {
+  display: grid;
+  gap: var(--s-1);
+  min-width: 0;
+}
+.terminal-mobile-controls__title {
+  color: var(--text-3);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.terminal-mobile-controls__dpad {
+  display: grid;
+  grid-template: repeat(2, var(--terminal-touch-target)) / repeat(3, var(--terminal-touch-target));
+  justify-content: center;
+  gap: var(--s-1);
+}
+.terminal-mobile-controls__key {
+  min-inline-size: var(--terminal-touch-target);
+  min-block-size: var(--terminal-touch-target);
+  padding: var(--s-1) var(--s-2);
+  color: var(--text-1);
+  background: var(--surface-3);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  line-height: 1.1;
+  touch-action: manipulation;
+}
+.terminal-mobile-controls__key:hover:not(:disabled),
+.terminal-mobile-controls__key:active:not(:disabled) {
+  background: var(--surface-4);
+}
+.terminal-mobile-controls__key:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+.terminal-mobile-controls__key--up { grid-area: 1 / 2; }
+.terminal-mobile-controls__key--left { grid-area: 2 / 1; }
+.terminal-mobile-controls__key--down { grid-area: 2 / 2; }
+.terminal-mobile-controls__key--right { grid-area: 2 / 3; }
+.terminal-mobile-controls__key-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(var(--terminal-touch-target), 1fr));
+  gap: var(--s-1);
+}
+.terminal-mobile-controls__scroll-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(var(--terminal-touch-target), 1fr));
+  gap: var(--s-1);
+}
 .terminal-controls__hint {
   display: inline-flex;
   flex: 0 0 auto;
@@ -1458,13 +1626,21 @@ input, textarea, select { font: inherit; color: inherit; }
     min-height: 44px;
   }
   .terminal-key-menu { display: none; }
-  .terminal-touch-keys {
-    display: inline-flex;
-    flex: 0 0 auto;
-    gap: 3px;
-  }
+  .terminal-mobile-controls { display: block; }
+  .terminal-scroll-control { display: flex; }
+  .terminal-touch-keys { display: none; }
   .terminal-controls__group {
     overflow-x: auto;
     overscroll-behavior-inline: contain;
+  }
+}
+
+@media (pointer: coarse) and (orientation: landscape) and (min-width: 480px) {
+  .terminal-mobile-controls__popover {
+    inline-size: min(416px, calc(100vw - var(--s-4) - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .terminal-mobile-controls__section--arrows {
+    grid-row: span 2;
   }
 }
