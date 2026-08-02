@@ -1,5 +1,16 @@
 import { createResource, createSignal, For, Show, onCleanup, onMount } from "solid-js";
 import { api, authFetch, downloadUrl } from "../api.js";
+import {
+  cancelResumableUpload,
+  formatBytes,
+  formatDuration,
+  formatRate,
+  getResumableUpload,
+  listPendingUploads,
+  uploadFileResumably,
+  uploadPercent,
+  uploadResumeKey
+} from "../upload-client.js";
 
 const LARGE_EDIT_WARN_BYTES = 8 * 1024 * 1024;
 let nextWorkspaceId = 0;
@@ -40,6 +51,11 @@ export function ProjectFiles(props) {
   let keyHandler;
   let focusHandler;
   let toastTimer;
+  let uploadPumpActive = false;
+  let uploadSequence = 0;
+  let activeUploadController = null;
+  let activeUploadLocalId = null;
+  let resumeTargetLocalId = null;
 
   const resourceBase = () => "/api/projects/" + encodeURIComponent(props.name);
 
@@ -57,7 +73,7 @@ export function ProjectFiles(props) {
   const [tabs, setTabs] = createSignal([]);
   const [toast, setToast] = createSignal(null);
   const [expanded, setExpanded] = createSignal(false);
-  const [uploading, setUploading] = createSignal(false);
+  const [uploadItems, setUploadItems] = createSignal([]);
 
   const activeTab = () => tabs().find((tab) => tab.path === activePath());
   const tabId = (tab) => `${workspaceId}-tab-${tab.id}`;
@@ -318,44 +334,243 @@ export function ProjectFiles(props) {
     }
   }
 
-  async function uploadFiles(fileList) {
-    const list = Array.from(fileList || []);
-    if (!list.length) return;
-    setUploading(true);
+  function updateUploadItem(localId, patch) {
+    setUploadItems((items) => items.map((item) => {
+      if (item.localId !== localId) return item;
+      const changes = typeof patch === "function" ? patch(item) : patch;
+      return { ...item, ...changes };
+    }));
+  }
+
+  function uploadItemFor(localId) {
+    return uploadItems().find((item) => item.localId === localId);
+  }
+
+  function statusForUpload(item) {
+    if (item.status === "needs-file") return "Select the same file to resume";
+    if (item.status === "preparing") return "Preparing upload…";
+    if (item.status === "queued") return "Queued";
+    if (item.status === "uploading") return item.resumed ? "Uploading from saved progress" : "Uploading";
+    if (item.status === "pausing") return "Pausing and saving progress…";
+    if (item.status === "retrying") {
+      const seconds = Math.max(1, Math.ceil(Number(item.retryIn || 0) / 1000));
+      return `Connection interrupted — retrying${item.retryIn ? ` in ${seconds}s` : ""}`;
+    }
+    if (item.status === "finalizing") return "Saving file…";
+    if (item.status === "paused") return "Paused — progress is saved";
+    if (item.status === "cancelling") return "Cancelling…";
+    if (item.status === "error") return item.error || "Upload failed";
+    if (item.status === "complete") return "Upload complete";
+    return "Waiting";
+  }
+
+  function uploadSummary() {
+    const items = uploadItems();
+    const total = items.reduce((sum, item) => sum + Number(item.size || 0), 0);
+    const uploaded = items.reduce((sum, item) => sum + Math.min(Number(item.uploaded || 0), Number(item.size || 0)), 0);
+    return { total, uploaded, percent: uploadPercent(uploaded, total) };
+  }
+
+  async function restorePendingUploads() {
     try {
-      for (const file of list) {
-        const response = await authFetch(
-          resourceBase() + "/upload?path=" + encodeURIComponent(file.name),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/octet-stream" },
-            body: file
-          }
+      const pending = await listPendingUploads(props.name);
+      setUploadItems((items) => {
+        const known = new Set(items.map((item) => item.uploadId).filter(Boolean));
+        return [
+          ...items,
+          ...pending
+            .filter((upload) => !known.has(upload.id))
+            .map((upload) => ({
+              localId: `server-${upload.id}`,
+              uploadId: upload.id,
+              file: null,
+              path: upload.path,
+              name: upload.path.split("/").pop(),
+              size: upload.size,
+              lastModified: upload.lastModified,
+              resumeKey: upload.resumeKey,
+              uploaded: upload.offset,
+              confirmed: upload.offset,
+              speed: 0,
+              eta: null,
+              status: "needs-file"
+            }))
+        ];
+      });
+    } catch {
+      // File browsing still works when the resumable-upload status check fails.
+    }
+  }
+
+  function enqueueFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    const target = resumeTargetLocalId ? uploadItemFor(resumeTargetLocalId) : null;
+    resumeTargetLocalId = null;
+
+    if (target) {
+      const file = files[0];
+      const key = uploadResumeKey(file, target.path);
+      if (key !== target.resumeKey) {
+        flash(`Select the original ${target.name} file to resume this upload`, "err");
+        return;
+      }
+      updateUploadItem(target.localId, { file, status: "queued", error: null });
+      void pumpUploadQueue();
+      return;
+    }
+
+    setUploadItems((items) => {
+      const next = [...items];
+      for (const file of files) {
+        const relativePath = file.name;
+        const resumeKey = uploadResumeKey(file, relativePath);
+        const pending = next.find((item) =>
+          item.status === "needs-file" &&
+          item.resumeKey === resumeKey &&
+          item.path === relativePath
         );
-        if (!response.ok) {
-          let message = "Upload failed (" + response.status + ")";
-          try {
-            message = (await response.json()).error || message;
-          } catch {}
-          throw new Error(message);
+        if (pending) {
+          Object.assign(pending, { file, status: "queued", error: null });
+          continue;
+        }
+        next.push({
+          localId: `local-${++uploadSequence}`,
+          uploadId: null,
+          file,
+          path: relativePath,
+          name: file.name,
+          size: file.size,
+          lastModified: file.lastModified || 0,
+          resumeKey,
+          uploaded: 0,
+          confirmed: 0,
+          speed: 0,
+          eta: null,
+          status: "queued"
+        });
+      }
+      return next;
+    });
+    void pumpUploadQueue();
+  }
+
+  async function pumpUploadQueue() {
+    if (uploadPumpActive) return;
+    uploadPumpActive = true;
+    try {
+      while (true) {
+        const item = uploadItems().find((candidate) => candidate.status === "queued" && candidate.file);
+        if (!item) break;
+        const controller = new AbortController();
+        activeUploadController = controller;
+        activeUploadLocalId = item.localId;
+        updateUploadItem(item.localId, { status: "preparing", error: null });
+        try {
+          const upload = await uploadFileResumably({
+            project: props.name,
+            file: item.file,
+            relativePath: item.path,
+            signal: controller.signal,
+            onProgress: (progress) => {
+              updateUploadItem(item.localId, {
+                uploadId: progress.uploadId || uploadItemFor(item.localId)?.uploadId,
+                status: progress.phase,
+                uploaded: progress.uploaded,
+                confirmed: progress.confirmed,
+                speed: progress.speed,
+                eta: progress.eta,
+                retryIn: progress.retryIn,
+                resumed: progress.resumed
+              });
+            }
+          });
+          updateUploadItem(item.localId, {
+            uploadId: upload.id,
+            status: "complete",
+            uploaded: upload.size,
+            confirmed: upload.size,
+            speed: 0,
+            eta: 0
+          });
+          try { await refetchRoot(); } catch {}
+        } catch (error) {
+          const current = uploadItemFor(item.localId);
+          if (error?.name === "AbortError") {
+            if (current && !["paused", "pausing", "cancelling"].includes(current.status)) {
+              updateUploadItem(item.localId, { status: "paused" });
+            }
+          } else {
+            updateUploadItem(item.localId, {
+              status: "error",
+              error: errorMessage(error, "Upload failed")
+            });
+          }
+        } finally {
+          if (activeUploadLocalId === item.localId) {
+            activeUploadController = null;
+            activeUploadLocalId = null;
+          }
         }
       }
-      try {
-        await refetchRoot();
-      } catch {
-        // Upload succeeded; the resource's reload error owns its retry UI.
-      }
-      flash(
-        list.length === 1
-          ? "Uploaded " + list[0].name
-          : "Uploaded " + list.length + " files",
-        "ok"
-      );
-    } catch (error) {
-      flash(errorMessage(error, "Upload failed"), "err");
     } finally {
-      setUploading(false);
+      uploadPumpActive = false;
     }
+  }
+
+  async function pauseUpload(item) {
+    updateUploadItem(item.localId, { status: "pausing" });
+    if (item.localId === activeUploadLocalId) activeUploadController?.abort();
+    const uploadId = uploadItemFor(item.localId)?.uploadId;
+    if (uploadId) {
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const upload = await getResumableUpload(props.name, uploadId);
+        updateUploadItem(item.localId, {
+          status: "paused",
+          uploaded: upload.offset,
+          confirmed: upload.offset,
+          resumed: upload.offset > 0
+        });
+        return;
+      } catch {}
+    }
+    updateUploadItem(item.localId, { status: "paused" });
+  }
+
+  function resumeUpload(item) {
+    if (!item.file) {
+      resumeTargetLocalId = item.localId;
+      uploadInput?.click();
+      return;
+    }
+    updateUploadItem(item.localId, { status: "queued", error: null });
+    void pumpUploadQueue();
+  }
+
+  async function cancelUpload(item) {
+    updateUploadItem(item.localId, { status: "cancelling", error: null });
+    if (item.localId === activeUploadLocalId) activeUploadController?.abort();
+    try {
+      let uploadId = item.uploadId;
+      if (!uploadId) {
+        const pending = await listPendingUploads(props.name);
+        uploadId = pending.find((upload) =>
+          upload.resumeKey === item.resumeKey && upload.path === item.path
+        )?.id;
+      }
+      if (uploadId) await cancelResumableUpload(props.name, uploadId);
+      setUploadItems((items) => items.filter((candidate) => candidate.localId !== item.localId));
+    } catch (error) {
+      updateUploadItem(item.localId, {
+        status: "error",
+        error: errorMessage(error, "Could not cancel upload")
+      });
+    }
+  }
+
+  function dismissUpload(item) {
+    setUploadItems((items) => items.filter((candidate) => candidate.localId !== item.localId));
   }
 
   function hideOutsideWorkspace() {
@@ -443,6 +658,7 @@ export function ProjectFiles(props) {
   }
 
   onMount(() => {
+    void restorePendingUploads();
     keyHandler = (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
@@ -469,6 +685,7 @@ export function ProjectFiles(props) {
     document.removeEventListener("keydown", keyHandler);
     document.removeEventListener("focusin", focusHandler);
     clearTimeout(toastTimer);
+    activeUploadController?.abort();
     restoreOutsideWorkspace();
   });
 
@@ -489,11 +706,10 @@ export function ProjectFiles(props) {
           <button
             type="button"
             class="btn btn--ghost btn--sm"
-            disabled={uploading()}
             aria-label={"Upload files to " + props.name}
             onClick={() => uploadInput?.click()}
           >
-            {uploading() ? "Uploading…" : "Upload"}
+            Upload
           </button>
           <input
             ref={uploadInput}
@@ -502,9 +718,8 @@ export function ProjectFiles(props) {
             class="sr-only"
             tabindex="-1"
             aria-label={"Choose files to upload to " + props.name}
-            disabled={uploading()}
-            onChange={async (event) => {
-              await uploadFiles(event.currentTarget.files);
+            onChange={(event) => {
+              enqueueFiles(event.currentTarget.files);
               event.currentTarget.value = "";
             }}
           />
@@ -518,6 +733,84 @@ export function ProjectFiles(props) {
             Reload
           </button>
         </div>
+        <Show when={uploadItems().length}>
+          <section class="upload-queue" aria-label="File uploads">
+            <div class="upload-queue__summary">
+              <div class="row">
+                <strong>Uploads</strong>
+                <span class="spacer" />
+                <span class="muted">{uploadSummary().percent.toFixed(uploadSummary().percent < 1 ? 2 : 0)}%</span>
+              </div>
+              <progress
+                class="upload-progress upload-progress--overall"
+                max={uploadSummary().total || 1}
+                value={uploadSummary().total ? uploadSummary().uploaded : 1}
+                aria-label="Overall upload progress"
+              />
+            </div>
+            <ul class="upload-queue__list">
+              <For each={uploadItems()}>
+                {(item) => (
+                  <li class="upload-item">
+                    <div class="upload-item__title-row">
+                      <span class="upload-item__name" title={item.path}>{item.name}</span>
+                      <span class="upload-item__percent">
+                        {uploadPercent(item.uploaded, item.size).toFixed(uploadPercent(item.uploaded, item.size) < 1 ? 2 : 0)}%
+                      </span>
+                    </div>
+                    <progress
+                      class="upload-progress"
+                      max={item.size || 1}
+                      value={item.size ? Math.min(item.uploaded || 0, item.size) : 1}
+                      aria-label={`Upload progress for ${item.name}`}
+                      aria-valuetext={`${formatBytes(item.uploaded)} sent, ${formatBytes(item.confirmed)} saved, of ${formatBytes(item.size)}`}
+                    />
+                    <div class="upload-item__status">{statusForUpload(item)}</div>
+                    <Show when={["uploading", "retrying", "finalizing", "paused"].includes(item.status)}>
+                      <div class="upload-item__metrics">
+                        <span>{formatBytes(item.uploaded)} of {formatBytes(item.size)}</span>
+                        <Show when={item.status === "uploading" && item.speed > 0}>
+                          <span>{formatRate(item.speed)}</span>
+                          <span>{formatDuration(item.eta)}</span>
+                        </Show>
+                        <Show when={item.confirmed < item.uploaded}>
+                          <span>{formatBytes(item.confirmed)} saved</span>
+                        </Show>
+                      </div>
+                    </Show>
+                    <div class="upload-item__actions">
+                      <Show when={["uploading", "retrying", "preparing", "queued"].includes(item.status)}>
+                        <button type="button" class="btn btn--ghost btn--sm" onClick={() => pauseUpload(item)}>
+                          Pause
+                        </button>
+                      </Show>
+                      <Show when={["paused", "needs-file", "error"].includes(item.status)}>
+                        <button type="button" class="btn btn--ghost btn--sm" onClick={() => resumeUpload(item)}>
+                          {item.file ? "Resume" : "Select file"}
+                        </button>
+                      </Show>
+                      <Show when={item.status === "complete"}>
+                        <button type="button" class="btn btn--ghost btn--sm" onClick={() => dismissUpload(item)}>
+                          Dismiss
+                        </button>
+                      </Show>
+                      <Show when={item.status !== "complete"}>
+                        <button
+                          type="button"
+                          class="btn btn--ghost btn--sm upload-item__cancel"
+                          disabled={item.status === "cancelling"}
+                          onClick={() => cancelUpload(item)}
+                        >
+                          Cancel
+                        </button>
+                      </Show>
+                    </div>
+                  </li>
+                )}
+              </For>
+            </ul>
+          </section>
+        </Show>
         <div class="file-workspace__tree-body">
           <Show
             when={!root.loading}

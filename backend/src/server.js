@@ -12,6 +12,7 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import { openProjectShell, listSessions, renameSession, destroySession, destroyProjectRuntime, setProjectEnv, getProjectEnv, getProjectBashrc, setProjectBashrc, resetProjectState, attachTerminalWebSocket, closeTerminalConnectionsForSession, initLocalShells, shutdownLocalShells, listArchivedSessionLogs, getProjectPorts, updateProjectPorts, validateShellEnvironment, setGlobalEnvProvider, refreshGlobalEnvironment, SESSION_ARCHIVE_PATH } from "./services/local-shell.js";
 import { destroyPod, PROJECT_NAME_RE } from "./services/pod-runtime.js";
+import { ResumableUploadStore } from "./services/resumable-upload.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
@@ -22,6 +23,15 @@ const STATE_DIR = process.env.STATE_DIR || path.join(process.cwd(), ".reaper-loc
 
 for (const d of [VPS_PROJECTS, STATE_DIR, path.dirname(GLOBAL_ENV)]) {
   try { await fs.mkdir(d, { recursive: true }); } catch {}
+}
+const uploadStore = new ResumableUploadStore({
+  projectsRoot: VPS_PROJECTS,
+  chunkBytes: Number(process.env.UPLOAD_CHUNK_BYTES || 16 * 1024 * 1024),
+  storageReserveBytes: Number(process.env.UPLOAD_STORAGE_RESERVE_BYTES || 1024 * 1024 * 1024)
+});
+const UPLOAD_REQUEST_TIMEOUT_MS = Number(process.env.UPLOAD_REQUEST_TIMEOUT_MS || 30 * 60 * 1000);
+if (!Number.isSafeInteger(UPLOAD_REQUEST_TIMEOUT_MS) || UPLOAD_REQUEST_TIMEOUT_MS < 60_000) {
+  throw new Error("UPLOAD_REQUEST_TIMEOUT_MS must be an integer of at least 60000");
 }
 
 const PORT = Number(process.env.REAPER_PORT || process.env.PORT || 4000);
@@ -401,8 +411,9 @@ function setCors(res, origin) {
     res.setHeader("Access-Control-Allow-Origin", origin || "*");
     res.setHeader("Access-Control-Allow-Credentials", "true");
   }
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token, Upload-Offset");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Expose-Headers", "Upload-Offset");
 }
 
 function firstForwardedHeader(value) {
@@ -957,6 +968,7 @@ const projects = {
     assertProjectAccess(params.name);
     const result = await destroyProjectRuntime(params.name);
     deleteProjectTokenStore(params.name);
+    await uploadStore.removeProject(params.name);
     await audit("projects.delete", req, { name: params.name, routeCleanupPending: result.routeCleanupPending });
     return { status: 200, body: { ok: true, routeCleanupPending: result.routeCleanupPending } };
   }
@@ -1132,6 +1144,50 @@ function makeFileApi(rootFor, missing) {
 }
 
 const files = makeFileApi((params) => projectDir(params.name), "project not found");
+
+const resumableUploads = {
+  list: async (req, body, params) => {
+    assertProjectAccess(params.name);
+    return { status: 200, body: { uploads: await uploadStore.list(params.name) } };
+  },
+  begin: async (req, body, params) => {
+    assertProjectAccess(params.name);
+    const upload = await uploadStore.begin(params.name, body);
+    if (!upload.resumed) await audit("files.upload.begin", req, { name: params.name, path: upload.path, bytes: upload.size });
+    return { status: upload.resumed ? 200 : 201, body: { upload } };
+  },
+  status: async (req, body, params) => {
+    assertProjectAccess(params.name);
+    return { status: 200, body: { upload: await uploadStore.status(params.name, params.id) } };
+  },
+  chunk: async (req, res, params) => {
+    assertProjectAccess(params.name);
+    try {
+      const result = await uploadStore.writeChunk(params.name, params.id, req);
+      if (result.aborted || req.aborted || res.destroyed) return;
+      res.setHeader("Upload-Offset", String(result.upload.offset));
+      res.setHeader("Cache-Control", "no-store");
+      return sendJson(res, 200, { upload: result.upload });
+    } catch (error) {
+      if (req.aborted || res.destroyed) return;
+      const result = fileErrorResult(error, 500);
+      if (Number.isSafeInteger(result.body.offset)) res.setHeader("Upload-Offset", String(result.body.offset));
+      return sendJson(res, result.status, result.body);
+    }
+  },
+  complete: async (req, body, params) => {
+    assertProjectAccess(params.name);
+    const upload = await uploadStore.complete(params.name, params.id);
+    await audit("files.upload.complete", req, { name: params.name, path: upload.path, bytes: upload.size });
+    return { status: 200, body: { upload } };
+  },
+  cancel: async (req, body, params) => {
+    assertProjectAccess(params.name);
+    const upload = await uploadStore.cancel(params.name, params.id);
+    await audit("files.upload.cancel", req, { name: params.name, path: upload.path });
+    return { status: 200, body: { upload } };
+  }
+};
 
 /* ---------- env + bashrc ---------- */
 const env = {
@@ -1688,6 +1744,12 @@ const routes = [
   ["DELETE", "/api/projects/:name/file", true, files.delete],
   ["POST",   "/api/projects/:name/dir", true, files.mkdir],
   ["POST",   "/api/projects/:name/upload", true, files.upload, true],
+  ["GET",    "/api/projects/:name/uploads", true, resumableUploads.list],
+  ["POST",   "/api/projects/:name/uploads", true, resumableUploads.begin],
+  ["GET",    "/api/projects/:name/uploads/:id", true, resumableUploads.status],
+  ["PATCH",  "/api/projects/:name/uploads/:id", true, resumableUploads.chunk, true],
+  ["POST",   "/api/projects/:name/uploads/:id/complete", true, resumableUploads.complete],
+  ["DELETE", "/api/projects/:name/uploads/:id", true, resumableUploads.cancel],
   ["GET",    "/api/projects/:name/download", true, files.download, true],
   ["HEAD",   "/api/projects/:name/download", true, files.download, true],
   ["GET",    "/api/projects/:name/env", true, env.get],
@@ -1770,7 +1832,10 @@ async function handleRequest(req, res) {
 
   if (req.method === "OPTIONS") { res.statusCode = 204; return res.end(); }
   const forwardAuthRequest = pathname === "/api/auth/me" && checkForwardAuthRateLimit(req);
-  if (!forwardAuthRequest && !checkGlobalRateLimit(req)) return sendJson(res, 429, { error: "rate limit exceeded" });
+  const resumableChunkRequest = req.method === "PATCH" && /^\/api\/projects\/[^/]+\/uploads\/[0-9a-f-]{36}$/i.test(pathname);
+  if (!forwardAuthRequest && !resumableChunkRequest && !checkGlobalRateLimit(req)) {
+    return sendJson(res, 429, { error: "rate limit exceeded" });
+  }
 
   const apiUser = getApiTokenUser(req);
   const ua = req.headers["user-agent"] || "";
@@ -1826,6 +1891,7 @@ async function handleRequest(req, res) {
 
 /* ---------- boot ---------- */
 const server = http.createServer(handleRequest);
+server.requestTimeout = UPLOAD_REQUEST_TIMEOUT_MS;
 const terminalWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 64 * 1024 });
 server.on("upgrade", (req, socket, head) => {
   let pathname;

@@ -25,6 +25,11 @@ services:
       HOST_PROJECTS_ROOT: /app/workspace
       REAPER_POD_IMAGE: reaper-pod:latest
       CADDY_CONTAINER: reaper-caddy
+      # Large files use durable 16 MiB chunks. Each acknowledged offset has
+      # already been fsynced on the persistent workspace volume.
+      UPLOAD_CHUNK_BYTES: ${UPLOAD_CHUNK_BYTES:-16777216}
+      UPLOAD_STORAGE_RESERVE_BYTES: ${UPLOAD_STORAGE_RESERVE_BYTES:-1073741824}
+      UPLOAD_REQUEST_TIMEOUT_MS: ${UPLOAD_REQUEST_TIMEOUT_MS:-1800000}
     volumes:
       - ./workspace:/workspace
       - ./global-env:/global-env
