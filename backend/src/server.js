@@ -26,7 +26,7 @@ for (const d of [VPS_PROJECTS, STATE_DIR, path.dirname(GLOBAL_ENV)]) {
 }
 const uploadStore = new ResumableUploadStore({
   projectsRoot: VPS_PROJECTS,
-  chunkBytes: Number(process.env.UPLOAD_CHUNK_BYTES || 16 * 1024 * 1024),
+  chunkBytes: Number(process.env.UPLOAD_CHUNK_BYTES || 256 * 1024 * 1024),
   storageReserveBytes: Number(process.env.UPLOAD_STORAGE_RESERVE_BYTES || 1024 * 1024 * 1024)
 });
 const UPLOAD_REQUEST_TIMEOUT_MS = Number(process.env.UPLOAD_REQUEST_TIMEOUT_MS || 30 * 60 * 1000);

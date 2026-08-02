@@ -81,6 +81,48 @@ async function pollForOffset(request, pathname, expected) {
   throw new Error(`upload did not persist offset ${expected}`);
 }
 
+test("default uploads use the maximum supported 256 MiB request size", () => {
+  const store = new ResumableUploadStore({ projectsRoot: ".", storageReserveBytes: 0 });
+  assert.equal(store.chunkBytes, 256 * 1024 * 1024);
+  assert.throws(
+    () => new ResumableUploadStore({
+      projectsRoot: ".",
+      chunkBytes: 256 * 1024 * 1024 + 1,
+      storageReserveBytes: 0
+    }),
+    /between 1 MiB and 256 MiB/
+  );
+});
+
+test("batched writes preserve a request larger than the internal I/O buffer", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reaper-batched-upload-"));
+  const size = 17 * 1024 * 1024;
+  await fs.mkdir(path.join(root, "demo"));
+  const store = new ResumableUploadStore({ projectsRoot: root, storageReserveBytes: 0 });
+  try {
+    const upload = await store.begin("demo", {
+      path: "batched.bin",
+      size,
+      lastModified: 1,
+      resumeKey: `batched:${size}:1`
+    });
+    const request = Readable.from([Buffer.alloc(size, 0x5a)]);
+    request.headers = { "upload-offset": "0", "content-length": String(size) };
+    request.complete = true;
+    request.aborted = false;
+    const result = await store.writeChunk("demo", upload.id, request);
+    assert.equal(result.aborted, false);
+    assert.equal(result.upload.offset, size);
+    await store.complete("demo", upload.id);
+    const saved = await fs.readFile(path.join(root, "demo", "batched.bin"));
+    assert.equal(saved.length, size);
+    assert.equal(saved[0], 0x5a);
+    assert.equal(saved.at(-1), 0x5a);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("an interrupted chunk keeps only bytes durably written before disconnect", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "reaper-interrupted-chunk-"));
   await fs.mkdir(path.join(root, "demo"));

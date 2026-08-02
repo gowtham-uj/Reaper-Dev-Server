@@ -8,6 +8,9 @@ const RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const NOFOLLOW = fss.constants.O_NOFOLLOW || 0;
 const DIRECTORY_FLAGS = fss.constants.O_RDONLY | (fss.constants.O_DIRECTORY || 0) | NOFOLLOW;
 const WRITE_FLAGS = fss.constants.O_WRONLY | NOFOLLOW;
+const MAX_UPLOAD_CHUNK_BYTES = 256 * 1024 * 1024;
+const DEFAULT_UPLOAD_CHUNK_BYTES = MAX_UPLOAD_CHUNK_BYTES;
+const UPLOAD_WRITE_BATCH_BYTES = 8 * 1024 * 1024;
 
 function uploadError(statusCode, message, detail = {}) {
   const error = new Error(message);
@@ -123,12 +126,12 @@ function isInterruptedRequest(req, error) {
 }
 
 export class ResumableUploadStore {
-  constructor({ projectsRoot, chunkBytes = 16 * 1024 * 1024, storageReserveBytes = 1024 * 1024 * 1024 } = {}) {
+  constructor({ projectsRoot, chunkBytes = DEFAULT_UPLOAD_CHUNK_BYTES, storageReserveBytes = 1024 * 1024 * 1024 } = {}) {
     this.projectsRoot = path.resolve(projectsRoot || ".");
     this.storageRoot = path.join(this.projectsRoot, ".reaper-uploads");
     this.chunkBytes = positiveSafeInteger(chunkBytes, "UPLOAD_CHUNK_BYTES");
-    if (this.chunkBytes < 1024 * 1024 || this.chunkBytes > 256 * 1024 * 1024) {
-      throw new Error("UPLOAD_CHUNK_BYTES must be between 1 MiB and 256 MiB");
+    if (this.chunkBytes < 1024 * 1024 || this.chunkBytes > MAX_UPLOAD_CHUNK_BYTES) {
+      throw new Error(`UPLOAD_CHUNK_BYTES must be between 1 MiB and ${MAX_UPLOAD_CHUNK_BYTES / 1024 / 1024} MiB`);
     }
     this.storageReserveBytes = positiveSafeInteger(storageReserveBytes, "UPLOAD_STORAGE_RESERVE_BYTES", { allowZero: true });
     this.locks = new Map();
@@ -418,9 +421,21 @@ export class ResumableUploadStore {
 
       let handle;
       let received = 0;
+      let written = 0;
+      let pending = [];
+      let pendingBytes = 0;
       let interrupted = false;
       let failure = null;
       let durable = false;
+      const flushPending = async () => {
+        if (!pendingBytes) return;
+        const data = pending.length === 1 ? pending[0] : Buffer.concat(pending, pendingBytes);
+        pending = [];
+        pendingBytes = 0;
+        await writeAll(handle, data, offset + written);
+        written += data.length;
+      };
+
       try {
         handle = await fs.open(this.partPath(project, id), WRITE_FLAGS);
         const stat = await handle.stat();
@@ -433,9 +448,17 @@ export class ResumableUploadStore {
             if (received + chunk.length > contentLength || received + chunk.length > this.chunkBytes) {
               throw uploadError(413, "upload chunk exceeded its declared length");
             }
-            await writeAll(handle, chunk, offset + received);
-            received += chunk.length;
+            let cursor = 0;
+            while (cursor < chunk.length) {
+              const length = Math.min(chunk.length - cursor, UPLOAD_WRITE_BATCH_BYTES - pendingBytes);
+              pending.push(chunk.subarray(cursor, cursor + length));
+              pendingBytes += length;
+              received += length;
+              cursor += length;
+              if (pendingBytes === UPLOAD_WRITE_BATCH_BYTES) await flushPending();
+            }
           }
+          await flushPending();
         } catch (error) {
           if (isInterruptedRequest(req, error)) interrupted = true;
           else failure = error;
@@ -448,7 +471,11 @@ export class ResumableUploadStore {
         failure = error;
       } finally {
         if (handle) {
-          if (received > 0) {
+          if (pendingBytes > 0) {
+            try { await flushPending(); }
+            catch (error) { failure ||= error; }
+          }
+          if (written > 0) {
             try {
               await handle.sync();
               durable = true;
@@ -458,8 +485,8 @@ export class ResumableUploadStore {
           }
           await handle.close().catch((error) => { failure ||= error; });
         }
-        if (received > 0 && durable) {
-          record.offset = offset + received;
+        if (written > 0 && durable) {
+          record.offset = offset + written;
           record.updatedAt = new Date().toISOString();
           await this.writeMetadata(project, record).catch((error) => { failure ||= error; });
         }
@@ -467,7 +494,7 @@ export class ResumableUploadStore {
 
       if (failure) throw failure;
       return {
-        upload: this.response(record, offset + received),
+        upload: this.response(record, offset + written),
         aborted: interrupted || req.aborted || !req.complete
       };
     });
