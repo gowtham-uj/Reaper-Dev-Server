@@ -4,6 +4,11 @@
 		output file /data/caddy-access.log
 		format json
 	}
+	# Some client networks severely throttle or degrade QUIC uploads. Keep the
+	# public transport on TCP so large resumable uploads use predictable HTTP/2.
+	servers {
+		protocols h1 h2
+	}
 }
 
 http://{$REAPER_HOST:?Set REAPER_HOST in the Caddy environment} {
