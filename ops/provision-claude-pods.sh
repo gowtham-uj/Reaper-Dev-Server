@@ -20,7 +20,19 @@ cleanup() {
 trap cleanup EXIT
 
 SOURCE_CONTAINER=$(docker create "${IMAGE}")
-docker cp "${SOURCE_CONTAINER}:${PACKAGE_ROOT}/@anthropic-ai/claude-code" "${STAGING_DIR}/claude-code"
+SOURCE_PACKAGE_ROOT=
+for candidate in /usr/local/lib/node_modules /usr/lib/node_modules; do
+  rm -rf -- "${STAGING_DIR}/claude-code"
+  if docker cp "${SOURCE_CONTAINER}:${candidate}/@anthropic-ai/claude-code" \
+    "${STAGING_DIR}/claude-code" 2>/dev/null; then
+    SOURCE_PACKAGE_ROOT=${candidate}
+    break
+  fi
+done
+if [ -z "${SOURCE_PACKAGE_ROOT}" ]; then
+  echo "The ${IMAGE} image does not contain the Claude package; refusing to provision pods." >&2
+  exit 1
+fi
 
 if [ "$(node -p 'require(process.argv[1]).version' "${STAGING_DIR}/claude-code/package.json")" != "${CLAUDE_VERSION}" ]; then
   echo "The ${IMAGE} Claude package is not the required version ${CLAUDE_VERSION}; refusing to provision pods." >&2
