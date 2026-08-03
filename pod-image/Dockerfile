@@ -11,19 +11,20 @@ RUN apt-get update \
     build-essential cmake pkg-config python3-pip pipx python3-venv \
     procps lsof iproute2 iputils-ping dnsutils netcat-openbsd openssh-client \
     rsync unzip zip tar gzip xz-utils ripgrep fd-find fzf jq sqlite3 \
-    postgresql-client vim nano less locales \
+    postgresql-client vim nano less locales util-linux \
  && sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
  && locale-gen \
  && git lfs install --system \
  && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
  && curl -fsSL https://deb.nodesource.com/setup_current.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
- && npm install -g corepack@latest opencode-ai@latest \
+ && npm install -g corepack@latest opencode-ai@latest @anthropic-ai/claude-code@2.1.212 \
  && corepack enable \
  && curl -fsSL https://bun.sh/install | bash \
  && bun --version \
  && node --version \
  && opencode --version \
+ && claude --version \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* /root/.npm /root/.cache
 

@@ -33,7 +33,9 @@ const SESSION_ARCHIVE_DIR = path.join(STATE_DIR, "archive");
 const TMUX_SOCKET = "/reaper/tmux.sock";
 const TMUX_CONFIG = "/reaper/tmux.conf";
 const SESSION_NAME_RE = /^[a-z0-9-]{1,32}$/;
-const DEFAULT_CLAUDE_CONTEXT_ENV = Object.freeze({});
+const DEFAULT_SHELL_ENV = Object.freeze({
+  CLAUDE_CONFIG_DIR: "/work/.reaper/claude",
+});
 const SUBDOMAIN_RE = /^(?!-)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const DOMAIN_RE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/;
 const IP_PUBLISH_MIN_PORT = 1024;
@@ -131,7 +133,7 @@ function reaperRoot(project) { return path.join(STATE_DIR, "projects", project);
 function manifestPath(project) { return path.join(reaperRoot(project), "sessions.json"); }
 function shellStateDir(project, name) { return path.join(reaperRoot(project), "shell-state", name); }
 function sessionId(project, name) { return `${project}/${name}`; }
-function podShellPath(name, file) { return `/reaper/shell-state/${name}/${file}`; }
+function podShellPath(name, file) { return `/work/.reaper/shell-state/${name}/${file}`; }
 function podLogPath(name) { return `/reaper/logs/${name}.log`; }
 function shellQuote(value) { return `'${String(value).replace(/'/g, `'"'"'`)}'`; }
 
@@ -198,7 +200,7 @@ async function readGlobalShellEnv() {
 function mergeShellEnvironment(globalEnv, projectEnv) {
   return normalizeProjectEnv(Object.assign(
     Object.create(null),
-    DEFAULT_CLAUDE_CONTEXT_ENV,
+    DEFAULT_SHELL_ENV,
     globalEnv,
     projectEnv
   ));
@@ -511,11 +513,13 @@ async function ensureShellRecoveryFiles(project, name, shellConfig = {}) {
     "}",
     `opencode() { __reaper_mark opencode; command opencode "$@"; local __status=$?; rm -f ${interrupted}; return "$__status"; }`,
     `omp() { __reaper_mark omp; command omp "$@"; local __status=$?; rm -f ${interrupted}; return "$__status"; }`,
+    "__reaper_claude() { local __claude_bin=claude; [ ! -x /usr/local/bin/claude-real ] || __claude_bin=/usr/local/bin/claude-real; command setpriv --reuid 65534 --regid 65534 --clear-groups --inh-caps +dac_override,+fowner --ambient-caps +dac_override,+fowner env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \"$__claude_bin\" --dangerously-skip-permissions \"$@\"; }",
+    `claude() { __reaper_mark claude; __reaper_claude "$@"; local __status=$?; rm -f ${interrupted}; return "$__status"; }`,
     "reaper-resume() {",
     `  if [ ! -r ${interrupted} ]; then printf 'Reaper: no interrupted supported command.\\n'; return 1; fi`,
     `  local __cmd __cwd; __cmd=$(sed -n '1p' ${interrupted}); __cwd=$(sed -n '2p' ${interrupted})`,
     "  if [ -d \"$__cwd\" ]; then cd -- \"$__cwd\"; fi",
-    `  local __status; case "$__cmd" in opencode) command opencode --continue ;; omp) command omp --continue ;; *) printf 'Reaper: cannot resume %s automatically.\\n' "$__cmd" >&2; return 2 ;; esac; __status=$?; rm -f ${interrupted}; return "$__status"`,
+    `  local __status; case "$__cmd" in opencode) command opencode --continue ;; omp) command omp --continue ;; claude) __reaper_claude --continue ;; *) printf 'Reaper: cannot resume %s automatically.\\n' "$__cmd" >&2; return 2 ;; esac; __status=$?; rm -f ${interrupted}; return "$__status"`,
     "}",
     `if [ -r ${interrupted} ]; then`,
     `  __cmd=$(sed -n '1p' ${interrupted}); __at=$(sed -n '3p' ${interrupted})`,
@@ -799,7 +803,7 @@ async function destroySessionUnlocked(project, name, { processesAlreadyStopped =
     console.error(`[reaper] failed to archive deleted session ${project}/${name}:`, error.message);
   }
   if (podMode) {
-    const cleaned = await podRuntime.podExec(project, ["rm", "-rf", "--", podShellPath(name, ""), `/work/.reaper/shell-state/${name}`]);
+    const cleaned = await podRuntime.podExec(project, ["rm", "-rf", "--", podShellPath(name, "")]);
     if (cleaned.code !== 0 && !tmuxSessionIsAbsent(cleaned)) {
       console.error(`[reaper] failed to remove deleted session state ${project}/${name}:`, cleaned.stderr || `exit code ${cleaned.code}`);
     }

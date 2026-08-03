@@ -917,15 +917,21 @@ test("project environment is validated, persisted, and applied to future tmux pr
   await assert.rejects(() => shell.setProjectEnv("environment", { "BAD-NAME": "x" }), /invalid environment variable name/);
 });
 
-test("no blanket context caps are injected without explicit configuration", async () => {
+test("Claude defaults use durable storage without context caps", async () => {
   await createProject("claude-context-defaults");
   await shell.openProjectShell({ path: "claude-context-defaults", sessionName: "main" });
-  const bashrc = fake.installed
+  const installed = fake.installed
     .filter((item) => item.project === "claude-context-defaults" && item.target.endsWith("/rcfile"))
-    .at(-1)?.content || "";
+    .at(-1);
+  assert.equal(installed?.target, "/work/.reaper/shell-state/main/rcfile");
+  const bashrc = installed?.content || "";
+  assert.match(bashrc, /export CLAUDE_CONFIG_DIR='\/work\/\.reaper\/claude'/);
   assert.doesNotMatch(bashrc, /CLAUDE_CODE_MAX_CONTEXT_TOKENS/);
   assert.doesNotMatch(bashrc, /CLAUDE_CODE_AUTO_COMPACT_WINDOW/);
   assert.doesNotMatch(bashrc, /CLAUDE_AUTOCOMPACT_PCT_OVERRIDE/);
+  assert.match(bashrc, /__reaper_claude\(\) \{ local __claude_bin=claude; \[ ! -x \/usr\/local\/bin\/claude-real \] \|\| __claude_bin=\/usr\/local\/bin\/claude-real; command setpriv --reuid 65534 --regid 65534 --clear-groups --inh-caps \+dac_override,\+fowner --ambient-caps \+dac_override,\+fowner env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe\.directory GIT_CONFIG_VALUE_0='\*' "\$__claude_bin" --dangerously-skip-permissions "\$@"; \}/);
+  assert.match(bashrc, /claude\(\) \{ __reaper_mark claude; __reaper_claude "\$@"/);
+  assert.match(bashrc, /claude\) __reaper_claude --continue/);
   assert.deepEqual({ ...(await shell.getProjectEnv("claude-context-defaults")) }, {});
 });
 

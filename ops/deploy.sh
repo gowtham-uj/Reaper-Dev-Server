@@ -140,8 +140,9 @@ chown -R "${RUNTIME_UID}:${RUNTIME_GID}" /app/workspace /app/monitoring /app/the
 
 docker build -t reaper-pod:latest ./pod-image
 
-# Project pods are durable runtime state. Deploy must never enumerate, stop,
-# remove, or recreate any reaper-pod-* container.
+# Project pods are durable runtime state. Deploy never starts, stops, removes,
+# or recreates them; it may provision missing CLI files in place.
+bash ./ops/provision-claude-pods.sh reaper-pod:latest
 if ! docker compose up -d --build --remove-orphans --wait --wait-timeout 180; then
   rm -rf -- "${FRONTEND_STAGE}"
   echo "Reaper services did not become healthy; the pre-cutover backup is retained at ${ARCHIVE}." >&2
