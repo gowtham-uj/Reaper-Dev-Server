@@ -59,8 +59,8 @@ class FakeDocker {
       workingDir: overrides.workingDir || "/work",
       bind: overrides.bind,
       restart: overrides.restart || "unless-stopped",
-      memory: overrides.memory ?? 8 * 1024 ** 3,
-      memorySwap: overrides.memorySwap ?? 8 * 1024 ** 3,
+      memory: overrides.memory ?? 12 * 1024 ** 3,
+      memorySwap: overrides.memorySwap ?? 16 * 1024 ** 3,
       nanoCpus: overrides.nanoCpus ?? 4_000_000_000,
       privileged: overrides.privileged ?? false,
       networks: new Map([[networkName, overrides.ip ?? "10.77.1.99"]])
@@ -106,7 +106,9 @@ class FakeDocker {
         MemorySwap: container.memorySwap,
         NanoCpus: container.nanoCpus,
         PidsLimit: container.pidsLimit,
-        Privileged: container.privileged,
+        Privileged: container.privileged
+      },
+      NetworkSettings: {
         Networks: Object.fromEntries(
           [...container.networks].map(([name, ip]) => [name, { IPAddress: container.running ? ip : "" }])
         )
@@ -199,7 +201,7 @@ class FakeDocker {
         project, name, running: true, id: "container-id",
         image: args.at(-1), workingDir: args[args.indexOf("-w") + 1], bind,
         restart: args[args.indexOf("--restart") + 1],
-        memory: 8 * 1024 ** 3, memorySwap: 8 * 1024 ** 3,
+        memory: 12 * 1024 ** 3, memorySwap: 16 * 1024 ** 3,
         nanoCpus: 4_000_000_000, pidsLimit: 4096,
         privileged: args.includes("--privileged"),
         networks: new Map([[networkName, this.assignIp()]])
@@ -209,10 +211,8 @@ class FakeDocker {
     if (args[0] === "update") {
       const container = this.containers.get(args.at(-1));
       if (args.includes("--restart")) container.restart = args[args.indexOf("--restart") + 1];
-      if (args.includes("--memory")) container.memory = 8 * 1024 ** 3;
-      if (args.includes("--memory-swap")) container.memorySwap = 8 * 1024 ** 3;
-      if (args.includes("--cpus")) container.nanoCpus = 4_000_000_000;
-      if (args.includes("--pids-limit")) container.pidsLimit = 4096;
+      if (args.includes("--memory")) container.memory = 12 * 1024 ** 3;
+      if (args.includes("--memory-swap")) container.memorySwap = 16 * 1024 ** 3;
       return { code: 0, stdout: container.name, stderr: "" };
     }
     if (args[0] === "start") {

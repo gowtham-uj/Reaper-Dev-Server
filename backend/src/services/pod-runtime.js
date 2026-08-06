@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import * as nodePty from "node-pty";
 
 export const POD_IMAGE = process.env.REAPER_POD_IMAGE || "reaper-pod:latest";
-const POD_MEMORY_LIMIT = process.env.REAPER_POD_MEMORY_LIMIT || "8g";
+const POD_MEMORY_LIMIT = process.env.REAPER_POD_MEMORY_LIMIT || "12g";
 const POD_CPU_LIMIT = process.env.REAPER_POD_CPU_LIMIT || "4";
 const POD_PIDS_LIMIT = process.env.REAPER_POD_PIDS_LIMIT || "4096";
 export const POD_NETWORK_POOL = process.env.REAPER_POD_NETWORK_POOL || "10.240.0.0/16";
@@ -488,7 +488,7 @@ function mutableUpdateArgs(data) {
     args.push("--restart", "unless-stopped");
   }
   if (data.HostConfig?.Memory !== expected.memory || data.HostConfig?.MemorySwap !== expected.memory) {
-    args.push("--memory", POD_MEMORY_LIMIT, "--memory-swap", POD_MEMORY_LIMIT);
+    args.push("--memory", POD_MEMORY_LIMIT, "--memory-swap", "16g");
   }
   if (data.HostConfig?.NanoCpus !== expected.nanoCpus) args.push("--cpus", POD_CPU_LIMIT);
   if (data.HostConfig?.PidsLimit !== expected.pidsLimit) args.push("--pids-limit", POD_PIDS_LIMIT);
@@ -582,7 +582,7 @@ export async function ensurePod(project, projectPath) {
     }
     await docker([
       "run", "-d", "--name", podName(project), "--restart", "unless-stopped",
-      "--memory", POD_MEMORY_LIMIT, "--memory-swap", POD_MEMORY_LIMIT,
+      "--memory", POD_MEMORY_LIMIT, "--memory-swap", "16g",
       "--cpus", POD_CPU_LIMIT, "--pids-limit", POD_PIDS_LIMIT,
       "--privileged",
       "--network", podNetworkName(project), "--hostname", podName(project).slice("reaper-pod-".length),
