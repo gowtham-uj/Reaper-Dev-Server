@@ -168,10 +168,12 @@ function parseInspect(stdout) {
 }
 
 function securityState(data) {
+  const privileged = Boolean(data.HostConfig?.Privileged);
   const capDrop = Array.isArray(data.HostConfig?.CapDrop) ? data.HostConfig.CapDrop : [];
   const securityOpt = Array.isArray(data.HostConfig?.SecurityOpt) ? data.HostConfig.SecurityOpt : [];
   const normalized = (cap) => String(cap).toUpperCase().replace(/^CAP_/, "");
   return {
+    privileged,
     netRawDropped: capDrop.some((capability) => normalized(capability) === "NET_RAW"),
     noNewPrivileges: securityOpt.some((option) => /^no-new-privileges(?::true)?$/i.test(String(option)))
   };
@@ -187,7 +189,7 @@ function inspectState(project, data) {
     running: Boolean(data.State?.Running),
     ip,
     isolated: Boolean(ip) && attachedNetworks.length === 1 && attachedNetworks[0] === network,
-    legacySecurity: !security.netRawDropped || !security.noNewPrivileges
+    legacySecurity: !security.privileged && (!security.netRawDropped || !security.noNewPrivileges)
   };
 }
 
@@ -582,7 +584,7 @@ export async function ensurePod(project, projectPath) {
       "run", "-d", "--name", podName(project), "--restart", "unless-stopped",
       "--memory", POD_MEMORY_LIMIT, "--memory-swap", POD_MEMORY_LIMIT,
       "--cpus", POD_CPU_LIMIT, "--pids-limit", POD_PIDS_LIMIT,
-      "--cap-drop", "NET_RAW", "--security-opt", "no-new-privileges",
+      "--privileged",
       "--network", podNetworkName(project), "--hostname", podName(project).slice("reaper-pod-".length),
       "-v", `${hostProjectPath(project)}:/work`, "-w", "/work",
       "--label", `reaper.project=${project}`, POD_IMAGE

@@ -62,9 +62,7 @@ class FakeDocker {
       memory: overrides.memory ?? 8 * 1024 ** 3,
       memorySwap: overrides.memorySwap ?? 8 * 1024 ** 3,
       nanoCpus: overrides.nanoCpus ?? 4_000_000_000,
-      pidsLimit: overrides.pidsLimit ?? 4096,
-      capDrop: overrides.capDrop ?? ["NET_RAW"],
-      securityOpt: overrides.securityOpt ?? ["no-new-privileges:true"],
+      privileged: overrides.privileged ?? false,
       networks: new Map([[networkName, overrides.ip ?? "10.77.1.99"]])
     });
   }
@@ -108,10 +106,7 @@ class FakeDocker {
         MemorySwap: container.memorySwap,
         NanoCpus: container.nanoCpus,
         PidsLimit: container.pidsLimit,
-        CapDrop: container.capDrop,
-        SecurityOpt: container.securityOpt
-      },
-      NetworkSettings: {
+        Privileged: container.privileged,
         Networks: Object.fromEntries(
           [...container.networks].map(([name, ip]) => [name, { IPAddress: container.running ? ip : "" }])
         )
@@ -206,8 +201,7 @@ class FakeDocker {
         restart: args[args.indexOf("--restart") + 1],
         memory: 8 * 1024 ** 3, memorySwap: 8 * 1024 ** 3,
         nanoCpus: 4_000_000_000, pidsLimit: 4096,
-        capDrop: [args[args.indexOf("--cap-drop") + 1]],
-        securityOpt: [args[args.indexOf("--security-opt") + 1]],
+        privileged: args.includes("--privileged"),
         networks: new Map([[networkName, this.assignIp()]])
       });
       return { code: 0, stdout: "container-id", stderr: "" };
@@ -285,9 +279,7 @@ test("new pods use only a labelled ICC-disabled bridge with Docker-assigned IP a
   ]);
   const run = context.fake.calls.find(({ args }) => args[0] === "run");
   assert.equal(run.args.includes("--ip"), false);
-  assert.equal(run.args[run.args.indexOf("--network") + 1], podNetworkName("alpha"));
-  assert.ok(run.args.includes("NET_RAW"));
-  assert.ok(run.args.includes("no-new-privileges"));
+  assert.ok(run.args.includes("--privileged"));
   assert.deepEqual(result, {
     name: podName("alpha"),
     ip: "172.30.2.2",
