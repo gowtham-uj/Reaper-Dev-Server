@@ -25,12 +25,9 @@ for (const d of [VPS_PROJECTS, STATE_DIR, path.dirname(GLOBAL_ENV)]) {
   try { await fs.mkdir(d, { recursive: true }); } catch {}
 }
 const uploadStore = new ResumableUploadStore({
-  storageRoot: STATE_DIR,
-  chunkSize: Number(process.env.UPLOAD_CHUNK_BYTES || 256 * 1024 * 1024),
-  targetStorageReserve: Number(process.env.UPLOAD_STORAGE_RESERVE_BYTES || 1024 * 1024 * 1024),
-  maxParallelWrites: 4,
-  fsyncAfterChunk: true,
-  maxSessionMinutes: 1440,
+  projectsRoot: VPS_PROJECTS,
+  chunkBytes: Number(process.env.UPLOAD_CHUNK_BYTES || 256 * 1024 * 1024),
+  storageReserveBytes: Number(process.env.UPLOAD_STORAGE_RESERVE_BYTES || 1024 * 1024 * 1024)
 });
 const UPLOAD_REQUEST_TIMEOUT_MS = Number(process.env.UPLOAD_REQUEST_TIMEOUT_MS || 30 * 60 * 1000);
 if (!Number.isSafeInteger(UPLOAD_REQUEST_TIMEOUT_MS) || UPLOAD_REQUEST_TIMEOUT_MS < 60_000) {
