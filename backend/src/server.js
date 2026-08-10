@@ -1322,10 +1322,13 @@ let globalEnvVersion = 0;
 let pendingGlobalEnvRefresh = null;
 let globalEnvRefreshStatus = { state: "idle", desiredVersion: 0, appliedVersion: 0, failures: [] };
 
+const GLOBAL_ENV_UPDATE_TIMEOUT_MS = 15_000;
 function serializeGlobalEnvUpdate(operation) {
-  const pending = globalEnvUpdateOperation.then(operation, operation);
-  globalEnvUpdateOperation = pending.catch(() => {});
-  return pending;
+  globalEnvUpdateOperation = globalEnvUpdateOperation
+    .then(
+      () => Promise.race([operation(), new Promise((_, reject) => setTimeout(() => reject(new Error("global env update timed out")), GLOBAL_ENV_UPDATE_TIMEOUT_MS))]),
+      () => operation()
+    );
 }
 
 function startGlobalEnvRefresh() {
@@ -1877,7 +1880,7 @@ async function handleRequest(req, res) {
     let body = {};
     if (req.method !== "GET" && req.method !== "HEAD") body = await readBody(req);
     const result = await match.handler(req, body, match.params, query);
-    if (!result) return;
+    if (!result) return sendJson(res, 500, { error: "internal error", reason: "no response" });
     if (result.cookies?.access) setAuthCookie(res, result.cookies.access);
     if (result.cookies?.csrf) setCsrfCookieImpl(res, result.cookies.csrf);
     if (result.cookies?.clear) clearAuthCookie(res);
@@ -1892,6 +1895,10 @@ async function handleRequest(req, res) {
 /* ---------- boot ---------- */
 const server = http.createServer(handleRequest);
 server.requestTimeout = UPLOAD_REQUEST_TIMEOUT_MS;
+server.timeout = 30_000;
+server.keepAliveTimeout = 61_000;
+server.headersTimeout = 65_000;
+server.maxConnections = 512;
 const terminalWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 64 * 1024 });
 server.on("upgrade", (req, socket, head) => {
   let pathname;
@@ -1915,6 +1922,20 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`[reaper] projects: ${VPS_PROJECTS}`);
   console.log(`[reaper] global:   ${GLOBAL_ENV}`);
 });
+
+/* ---------- watchdog: self-terminate if event loop stalls ---------- */
+let watchdogLastResponse = Date.now();
+const WATCHDOG_INTERVAL_MS = 15_000;
+const WATCHDOG_MAX_STALL_MS = 90_000;
+server.on("request", () => { watchdogLastResponse = Date.now(); });
+const watchdogTimer = setInterval(() => {
+  const stalled = Date.now() - watchdogLastResponse;
+  if (stalled > WATCHDOG_MAX_STALL_MS) {
+    console.error(`[reaper] watchdog: no response for ${stalled}ms, forcing restart`);
+    process.exit(1);
+  }
+}, WATCHDOG_INTERVAL_MS);
+watchdogTimer.unref();
 let shutdownRequested = false;
 async function shutdownServer() {
   if (shutdownRequested) return;
