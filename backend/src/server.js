@@ -25,14 +25,62 @@ for (const d of [VPS_PROJECTS, STATE_DIR, path.dirname(GLOBAL_ENV)]) {
   try { await fs.mkdir(d, { recursive: true }); } catch {}
 }
 const uploadStore = new ResumableUploadStore({
-  projectsRoot: VPS_PROJECTS,
-  chunkBytes: Number(process.env.UPLOAD_CHUNK_BYTES || 256 * 1024 * 1024),
-  storageReserveBytes: Number(process.env.UPLOAD_STORAGE_RESERVE_BYTES || 1024 * 1024 * 1024)
+  storageRoot: STATE_DIR,
+  chunkSize: Number(process.env.UPLOAD_CHUNK_BYTES || 256 * 1024 * 1024),
+  targetStorageReserve: Number(process.env.UPLOAD_STORAGE_RESERVE_BYTES || 1024 * 1024 * 1024),
+  maxParallelWrites: 4,
+  fsyncAfterChunk: true,
+  maxSessionMinutes: 1440,
 });
 const UPLOAD_REQUEST_TIMEOUT_MS = Number(process.env.UPLOAD_REQUEST_TIMEOUT_MS || 30 * 60 * 1000);
 if (!Number.isSafeInteger(UPLOAD_REQUEST_TIMEOUT_MS) || UPLOAD_REQUEST_TIMEOUT_MS < 60_000) {
   throw new Error("UPLOAD_REQUEST_TIMEOUT_MS must be an integer of at least 60000");
 }
+
+/* ---------- rotating file logger ---------- */
+const LOG_DIR = path.join(STATE_DIR, "logs");
+try { fss.mkdirSync(LOG_DIR, { recursive: true }); } catch {}
+const LOG_MAX_BYTES = 10 * 1024 * 1024;
+const LOG_MAX_FILES = 5;
+function rotateLog(base) {
+  for (let i = LOG_MAX_FILES - 1; i >= 0; i--) {
+    const src = i === 0 ? base : `${base}.${i}`;
+    const dst = `${base}.${i + 1}`;
+    try { fss.renameSync(src, dst); } catch {}
+  }
+}
+function appendLog(base, line) {
+  try {
+    const p = base;
+    if (fss.existsSync(p) && fss.statSync(p).size >= LOG_MAX_BYTES) rotateLog(base);
+    fss.appendFileSync(p, line);
+  } catch {}
+}
+function reqLogLine(method, pathname, status, durationMs, ip) {
+  return `${new Date().toISOString()} ${method} ${pathname} ${status} ${durationMs}ms ${ip}\n`;
+}
+function errLogLine(message, stack) {
+  return `${new Date().toISOString()} ERROR ${message}\n${stack || ""}\n`;
+}
+const REQUEST_LOG = path.join(LOG_DIR, "requests.log");
+const ERROR_LOG = path.join(LOG_DIR, "errors.log");
+
+/* ---------- event loop lag ---------- */
+let eventLoopLagMs = 0;
+let eventLoopMaxLagMs = 0;
+let eventLoopMaxLagAt = null;
+const LAG_INTERVAL_MS = 1000;
+setInterval(() => {
+  const start = Date.now();
+  setImmediate(() => {
+    const lag = Date.now() - start;
+    eventLoopLagMs = lag;
+    if (lag > eventLoopMaxLagMs) {
+      eventLoopMaxLagMs = lag;
+      eventLoopMaxLagAt = new Date().toISOString();
+    }
+  });
+}, LAG_INTERVAL_MS).unref();
 
 const PORT = Number(process.env.REAPER_PORT || process.env.PORT || 4000);
 function requiredSecret(name) {
@@ -1408,6 +1456,9 @@ const readiness = async () => {
   const reasons = [];
   if (localShellStatus.degraded) reasons.push("TERMINAL_RUNTIME_DEGRADED");
   if (globalEnvRefreshStatus.state === "degraded") reasons.push("GLOBAL_ENV_PROPAGATION_DEGRADED");
+  let diskPct = null;
+  try { const s = fss.statfsSync("/"); diskPct = Math.round((1 - s.bavail / s.blocks) * 100); } catch {}
+  if (diskPct !== null && diskPct >= 90) reasons.push("DISK_CRITICAL");
   return {
     status: 200,
     body: {
@@ -1416,13 +1467,14 @@ const readiness = async () => {
       reasons,
       runtimeFailures: localShellStatus.failures?.length || 0,
       globalEnvFailures: globalEnvRefreshStatus.failures.length,
-      propagation: globalEnvRefreshStatus
+      propagation: globalEnvRefreshStatus,
+      eventLoopLagMs,
+      eventLoopMaxLagMs,
+      eventLoopMaxLagAt,
+      diskPct
     }
   };
 };
-
-/* ---------- router ---------- */
-/* bot protection + per-resource api tokens */
 /* ---------- per-resource API tokens + bot protection ---------- */
 const API_TOKENS_FILE = path.join(STATE_DIR, "api-tokens.json");
 const PROJECT_API_TOKENS_DIR = path.join(STATE_DIR, "project-api-tokens");
@@ -1824,9 +1876,13 @@ function parseQs(url) {
 }
 
 async function handleRequest(req, res) {
+  const startMs = Date.now();
   const url = req.url || "/";
   const i = url.indexOf("?");
   const pathname = i < 0 ? url : url.slice(0, i);
+  res.on("finish", () => {
+    appendLog(REQUEST_LOG, reqLogLine(req.method, pathname, res.statusCode, Date.now() - startMs, clientIp(req)));
+  });
   setCors(res, req.headers.origin);
 
   let query;
@@ -1887,7 +1943,10 @@ async function handleRequest(req, res) {
     return sendJson(res, result.status, result.body);
   } catch (error) {
     const status = error.statusCode || (error.name === "ZodError" ? 400 : 500);
-    if (status >= 500) console.error(`[${req.method} ${pathname}]`, error);
+    if (status >= 500) {
+      console.error(`[${req.method} ${pathname}]`, error);
+      appendLog(ERROR_LOG, errLogLine(`[${req.method} ${pathname}] ${error.message}`, error.stack));
+    }
     return sendJson(res, status, { error: error.message, ...(error.detail || {}) });
   }
 }
@@ -1956,6 +2015,28 @@ function requestShutdown() {
 }
 process.on("SIGINT", requestShutdown);
 process.on("SIGTERM", requestShutdown);
-process.on("uncaughtException", (e) => console.error("[reaper] uncaught", e));
+process.on("uncaughtException", (e) => {
+  console.error("[reaper] uncaught", e);
+  appendLog(ERROR_LOG, errLogLine(`uncaughtException: ${e.message}`, e.stack));
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[reaper] unhandledRejection", reason);
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  const stack = reason instanceof Error ? reason.stack : "";
+  appendLog(ERROR_LOG, errLogLine(`unhandledRejection: ${msg}`, stack));
+});
+process.on("SIGUSR1", () => {
+  const mem = process.memoryUsage();
+  const d = { rss: mem.rss, heapTotal: mem.heapTotal, heapUsed: mem.heapUsed, external: mem.external };
+  const line = `${new Date().toISOString()} SIGUSR1 heap: ${JSON.stringify(d)}\n`;
+  appendLog(ERROR_LOG, line);
+  console.error("[reaper]", line.trim());
+});
+process.on("SIGUSR2", () => {
+  const d = { uptime: process.uptime(), pid: process.pid };
+  const line = `${new Date().toISOString()} SIGUSR2 diag: ${JSON.stringify(d)}\n`;
+  appendLog(ERROR_LOG, line);
+  console.error("[reaper]", line.trim());
+});
 
 
