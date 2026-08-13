@@ -47,6 +47,7 @@ apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin do
 systemctl enable --now docker
 
 install -d /app/backend /app/frontend /app/https /app/workspace /app/monitoring /app/monitoring/logs /app/monitoring/tmp /app/theia-extensions /app/theia-data /app/theia-session-data /app/caddy-data /app/caddy-config /app/caddy-dynamic /app/pod-image /app/opencode/config /app/opencode/data /app/opencode/cache /app/terminal-home/root
+install -d -m 700 /app/workspace/cloud_proxy/.cloud-proxy/skills-store
 install -d /root/codex-backups
 RUNTIME_UID="${THEIA_RUNTIME_UID:-0}"
 RUNTIME_GID="${THEIA_RUNTIME_GID:-0}"

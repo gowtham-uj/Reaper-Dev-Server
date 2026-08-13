@@ -917,22 +917,61 @@ test("project environment is validated, persisted, and applied to future tmux pr
   await assert.rejects(() => shell.setProjectEnv("environment", { "BAD-NAME": "x" }), /invalid environment variable name/);
 });
 
-test("Claude defaults use durable storage without context caps", async () => {
-  await createProject("claude-context-defaults");
-  await shell.openProjectShell({ path: "claude-context-defaults", sessionName: "main" });
-  const installed = fake.installed
-    .filter((item) => item.project === "claude-context-defaults" && item.target.endsWith("/rcfile"))
-    .at(-1);
-  assert.equal(installed?.target, "/work/.reaper/shell-state/main/rcfile");
-  const bashrc = installed?.content || "";
+test("generated rcfile catalogs Claude chat models with exact safe context caps", async () => {
+  await createProject("claude-model-catalog");
+  await shell.openProjectShell({ path: "claude-model-catalog", sessionName: "main" });
+  const bashrc = fake.installed
+    .filter((item) => item.project === "claude-model-catalog" && item.target.endsWith("/rcfile"))
+    .at(-1)?.content || "";
+  const models = [
+    ["gpt-5.6-sol", 256000, 204800],
+    ["gpt-5.6-luna", 256000, 204800],
+    ["gpt-5.6-terra", 256000, 204800],
+    ["glm-5.2", 1048560, 838000],
+    ["deepseek-v4-flash", 1048560, 838000],
+    ["grok-4.5", 500000, 400000],
+    ["grok-4.6", 500000, 400000],
+    ["daybreak-blue-latest", 256000, 204800],
+  ];
   assert.match(bashrc, /export CLAUDE_CONFIG_DIR='\/work\/\.reaper\/claude'/);
-  assert.doesNotMatch(bashrc, /CLAUDE_CODE_MAX_CONTEXT_TOKENS/);
-  assert.doesNotMatch(bashrc, /CLAUDE_CODE_AUTO_COMPACT_WINDOW/);
-  assert.doesNotMatch(bashrc, /CLAUDE_AUTOCOMPACT_PCT_OVERRIDE/);
-  assert.match(bashrc, /__reaper_claude\(\) \{ local __claude_bin=claude; \[ ! -x \/usr\/local\/bin\/claude-real \] \|\| __claude_bin=\/usr\/local\/bin\/claude-real; command setpriv --reuid 65534 --regid 65534 --clear-groups --inh-caps \+dac_override,\+fowner --ambient-caps \+dac_override,\+fowner env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe\.directory GIT_CONFIG_VALUE_0='\*' "\$__claude_bin" --dangerously-skip-permissions "\$@"; \}/);
-  assert.match(bashrc, /claude\(\) \{ __reaper_mark claude; __reaper_claude "\$@"/);
-  assert.match(bashrc, /claude\) __reaper_claude --continue/);
-  assert.deepEqual({ ...(await shell.getProjectEnv("claude-context-defaults")) }, {});
+  for (const [id, context, compact] of models) {
+    assert.match(bashrc, new RegExp(`${id.replace(".", "\\.")}\\) __context=${context}; __compact=${compact}`));
+    assert.ok(bashrc.includes(`${id}\t${context}\t${compact}`));
+  }
+  assert.match(bashrc, /CLAUDE_CODE_MAX_CONTEXT_TOKENS=\$__context CLAUDE_CODE_AUTO_COMPACT_WINDOW=\$__compact __reaper_claude --model "\$__model" "\$@"/);
+  assert.doesNotMatch(bashrc, /export CLAUDE_CODE_MAX_CONTEXT_TOKENS=/);
+  assert.deepEqual({ ...(await shell.getProjectEnv("claude-model-catalog")) }, {});
+});
+
+test("Claude model launcher rejects unknown and image-only IDs and launches normal selections", async () => {
+  await createProject("claude-model-validation");
+  await shell.openProjectShell({ path: "claude-model-validation", sessionName: "main" });
+  const bashrc = fake.installed
+    .filter((item) => item.project === "claude-model-validation" && item.target.endsWith("/rcfile"))
+    .at(-1)?.content || "";
+  assert.match(bashrc, /gpt-image-1\.5\|gpt-image-2\|grok-imagine-image\|grok-imagine-image-quality\) printf 'Reaper: %s is image-only and cannot be used for Claude chat/);
+  assert.match(bashrc, /\*\) printf 'Reaper: unknown Claude chat model: %s\. Run reaper-claude-models to list IDs\./);
+  assert.match(bashrc, /REAPER_CLAUDE_MODEL=\$__model/);
+  assert.match(bashrc, /__reaper_mark claude/);
+  assert.match(bashrc, /__reaper_claude --model "\$__model" "\$@"/);
+});
+
+test("Claude model resume permits same or larger targets and fails closed before smaller switches", async () => {
+  await createProject("claude-model-resume");
+  await shell.openProjectShell({ path: "claude-model-resume", sessionName: "main" });
+  const bashrc = fake.installed
+    .filter((item) => item.project === "claude-model-resume" && item.target.endsWith("/rcfile"))
+    .at(-1)?.content || "";
+  assert.match(bashrc, /--continue\|--resume\) __resume=1/);
+  assert.match(bashrc, /case "\$\{REAPER_CLAUDE_MODEL-\}" in/);
+  assert.match(bashrc, /\[ -n "\$__current_context" \] \|\| __current_context=1048560/);
+  assert.match(bashrc, /if \[ "\$__context" -lt "\$__current_context" \]; then/);
+  const refusal = bashrc.indexOf("refusing unsafe resume");
+  const launch = bashrc.indexOf('__reaper_claude --model "$__model"');
+  assert.ok(refusal > -1 && launch > refusal, "smaller resume refusal must precede launch");
+  assert.match(bashrc, /Claude Code 2\.1\.212 cannot be proven to compact and resume noninteractively before switching/);
+  assert.match(bashrc, /run \/compact in Claude; exit Claude; then run reaper-claude-model %s --continue/);
+  assert.match(bashrc, /return 3/);
 });
 
 test("per-project and global env caps apply only where explicitly set", async () => {

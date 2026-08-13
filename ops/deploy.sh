@@ -127,6 +127,7 @@ RUNTIME_UID="${THEIA_RUNTIME_UID:-0}"
 RUNTIME_GID="${THEIA_RUNTIME_GID:-0}"
 
 mkdir -p /app/https /app/workspace /app/monitoring /app/monitoring/logs /app/monitoring/tmp /app/theia-data /app/theia-session-data /app/caddy-data /app/caddy-config /app/caddy-dynamic /app/opencode/config /app/opencode/data /app/opencode/cache /app/terminal-home/root
+mkdir -p -m 700 /app/workspace/cloud_proxy/.cloud-proxy/skills-store
 mkdir -p /app/global-env
 if [ ! -f /app/global-env/global-env.json ]; then
   if [ -f /app/global-env.json ]; then

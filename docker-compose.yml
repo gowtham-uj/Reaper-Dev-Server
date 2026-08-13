@@ -14,6 +14,7 @@ services:
       VPS_PROJECTS: /workspace
       GLOBAL_ENV: /global-env/global-env.json
       STATE_DIR: /app/backend/.reaper-local
+      CLAUDE_SKILLS_STORE: /workspace/cloud_proxy/.cloud-proxy/skills-store
       REAPER_PORT: 4000
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in app/.env}
       COOKIE_SECURE: "true"
