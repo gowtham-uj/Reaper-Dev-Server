@@ -10,6 +10,7 @@ import { WebSocketServer } from "ws";
 import { z } from "zod";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
+import yazl from "yazl";
 import { openProjectShell, listSessions, renameSession, destroySession, destroyProjectRuntime, setProjectEnv, getProjectEnv, getProjectBashrc, setProjectBashrc, resetProjectState, attachTerminalWebSocket, closeTerminalConnectionsForSession, initLocalShells, shutdownLocalShells, listArchivedSessionLogs, getProjectPorts, updateProjectPorts, validateShellEnvironment, setGlobalEnvProvider, refreshGlobalEnvironment, SESSION_ARCHIVE_PATH } from "./services/local-shell.js";
 import { destroyPod, PROJECT_NAME_RE } from "./services/pod-runtime.js";
 import { ResumableUploadStore } from "./services/resumable-upload.js";
@@ -1021,6 +1022,137 @@ const projects = {
 
 /* ---------- project files ---------- */
 const UPLOAD_MAX_BYTES = Number(process.env.UPLOAD_MAX_BYTES) || 2 * 1024 * 1024 * 1024; // 2 GB
+const ZIP_MAX_ENTRIES = Number(process.env.ZIP_MAX_ENTRIES) || 50_000;
+const ZIP_MAX_TOTAL_BYTES = Number(process.env.ZIP_MAX_TOTAL_BYTES) || UPLOAD_MAX_BYTES;
+
+function attachmentFilename(name, fallback = "download") {
+  const cleaned = String(name || fallback).replace(/["\r\n\\/]/g, "").trim() || fallback;
+  return cleaned.slice(0, 180);
+}
+
+async function collectDirectoryZipEntries(root, directoryPath, archiveRootName) {
+  const files = [];
+  const directories = [];
+  let totalBytes = 0;
+  let entries = 0;
+
+  const track = () => {
+    entries += 1;
+    if (entries > ZIP_MAX_ENTRIES) {
+      throw httpError(413, "folder has too many entries to download as a zip", {
+        code: "ZIP_TOO_MANY_ENTRIES",
+        maxEntries: ZIP_MAX_ENTRIES
+      });
+    }
+  };
+
+  track();
+  directories.push(`${archiveRootName}/`);
+
+  const walk = async (absoluteDirectory, archiveDirectory) => {
+    await ensureSafeDirectory(root, absoluteDirectory);
+    const handle = await fs.opendir(absoluteDirectory);
+    try {
+      for await (const entry of handle) {
+        if (!entry?.name || entry.name === "." || entry.name === ".." || entry.name.includes("\0")) continue;
+        const absoluteChild = path.join(absoluteDirectory, entry.name);
+        const archiveChild = `${archiveDirectory}/${entry.name}`;
+        let stat;
+        try { stat = await fs.lstat(absoluteChild); }
+        catch (error) {
+          if (error.code === "ENOENT") continue;
+          throw error;
+        }
+        if (stat.isSymbolicLink()) continue;
+        if (stat.isDirectory()) {
+          track();
+          directories.push(`${archiveChild}/`);
+          await walk(absoluteChild, archiveChild);
+          continue;
+        }
+        if (!stat.isFile()) continue;
+        totalBytes += stat.size;
+        if (totalBytes > ZIP_MAX_TOTAL_BYTES) {
+          throw httpError(413, "folder is too large to download as a zip", {
+            code: "ZIP_TOO_LARGE",
+            maxBytes: ZIP_MAX_TOTAL_BYTES
+          });
+        }
+        track();
+        files.push({
+          absolutePath: absoluteChild,
+          archivePath: archiveChild,
+          mtime: stat.mtime,
+          size: stat.size
+        });
+      }
+    } finally {
+      await handle.close().catch(() => {});
+    }
+  };
+
+  await walk(directoryPath, archiveRootName);
+  return { files, directories, totalBytes, entries };
+}
+
+async function streamDirectoryZip(req, res, root, directoryPath, archiveRootName) {
+  const archive = await collectDirectoryZipEntries(root, directoryPath, archiveRootName);
+  const filename = attachmentFilename(`${archiveRootName}.zip`, "folder.zip");
+  res.statusCode = 200;
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Reaper-Zip-Entries", String(archive.entries));
+  res.setHeader("X-Reaper-Zip-Bytes", String(archive.totalBytes));
+  if (req.method === "HEAD") return res.end();
+
+  const zipfile = new yazl.ZipFile();
+  const openedHandles = [];
+  const abortZip = () => {
+    try { zipfile.outputStream.destroy(); } catch {}
+    for (const handle of openedHandles.splice(0)) handle.close().catch(() => {});
+  };
+  res.once("close", abortZip);
+  req.once("aborted", abortZip);
+  zipfile.outputStream.on("error", () => { if (!res.destroyed) res.destroy(); });
+  zipfile.outputStream.pipe(res);
+
+  try {
+    for (const directory of archive.directories) {
+      zipfile.addEmptyDirectory(directory.replace(/\/$/, ""));
+    }
+    for (const file of archive.files) {
+      const relativePath = path.relative(root, file.absolutePath).split(path.sep).join("/");
+      if (file.size === 0) {
+        // Re-validate the empty file path under the same safety rules before packaging.
+        await resolveSafeExistingPath(root, relativePath, "file");
+        zipfile.addBuffer(Buffer.alloc(0), file.archivePath, { mtime: file.mtime, mode: 0o644 });
+        continue;
+      }
+      const opened = await openSafeReadFile(root, relativePath);
+      openedHandles.push(opened.handle);
+      const stream = opened.handle.createReadStream({
+        autoClose: true,
+        start: 0,
+        end: file.size - 1
+      });
+      stream.once("close", () => {
+        const index = openedHandles.indexOf(opened.handle);
+        if (index >= 0) openedHandles.splice(index, 1);
+      });
+      zipfile.addReadStream(stream, file.archivePath, {
+        mtime: file.mtime,
+        size: file.size,
+        mode: 0o644
+      });
+    }
+    zipfile.end();
+  } catch (error) {
+    abortZip();
+    throw error;
+  }
+}
+
 
 // Shallow, lazy directory listing. Real repos hold node_modules/.git with
 // hundreds of thousands of files; a recursive walk would never return, so the
@@ -1156,11 +1288,26 @@ function makeFileApi(rootFor, missing) {
       if (!fss.existsSync(root)) return sendJson(res, 404, { error: missing });
       let opened;
       try {
-        opened = await openSafeReadFile(root, qs.path);
+        const rel = typeof qs.path === "string" ? qs.path : "";
+        if (!rel) throw httpError(400, "path is required");
+
+        let resolved;
+        try {
+          resolved = await resolveSafeExistingPath(root, rel, "file");
+        } catch (error) {
+          if (error.statusCode === 400 && error.message === "not a file") {
+            const directory = await resolveSafeExistingPath(root, rel, "directory");
+            const archiveRootName = attachmentFilename(path.basename(directory.target), "folder");
+            return streamDirectoryZip(req, res, root, directory.target, archiveRootName);
+          }
+          throw error;
+        }
+
+        opened = await openSafeReadFile(root, rel);
         res.statusCode = 200;
         res.setHeader("Content-Type", "application/octet-stream");
         res.setHeader("Content-Length", opened.stat.size);
-        res.setHeader("Content-Disposition", `attachment; filename="${path.basename(opened.target).replace(/["\r\n]/g, "")}"`);
+        res.setHeader("Content-Disposition", `attachment; filename="${attachmentFilename(path.basename(opened.target))}"`);
         if (req.method === "HEAD") {
           await opened.handle.close();
           return res.end();
@@ -1181,6 +1328,7 @@ function makeFileApi(rootFor, missing) {
         return stream.pipe(res);
       } catch (error) {
         if (opened?.handle) await opened.handle.close().catch(() => {});
+        if (req.aborted || res.headersSent || res.destroyed) return;
         const result = fileErrorResult(error, 500);
         return sendJson(res, result.status, result.body);
       }

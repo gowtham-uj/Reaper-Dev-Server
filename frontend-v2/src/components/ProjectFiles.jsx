@@ -125,25 +125,34 @@ export function ProjectFiles(props) {
 
   async function downloadFile(path, binaryOnly = false) {
     const requestPath = resourceBase() + "/download?path=" + encodeURIComponent(path);
+    const baseName = path.split("/").filter(Boolean).pop() || "download";
     try {
       const preflight = await authFetch(requestPath, { method: "HEAD" });
       if (!preflight.ok) {
         throw new Error("Download unavailable (" + preflight.status + ")");
       }
 
-      // HEAD surfaces authorization and missing-file errors. The subsequent GET
-      // remains a native browser download, so the file is never buffered in JS.
+      const contentType = String(preflight.headers.get("content-type") || "").toLowerCase();
+      const isZip = contentType.includes("application/zip");
+      const downloadName = isZip
+        ? (baseName.toLowerCase().endsWith(".zip") ? baseName : `${baseName}.zip`)
+        : baseName;
+
+      // HEAD surfaces authorization and missing-path errors. The subsequent GET
+      // remains a native browser download, so the payload is never buffered in JS.
       const anchor = document.createElement("a");
       anchor.href = downloadUrl(requestPath);
-      anchor.download = path.split("/").pop();
+      anchor.download = downloadName;
       anchor.rel = "noopener";
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
       flash(
         binaryOnly
-          ? "Binary file; downloading " + path.split("/").pop() + " instead"
-          : "Downloading " + path.split("/").pop(),
+          ? `Binary file; downloading ${downloadName} instead`
+          : isZip
+            ? `Downloading folder ${baseName} as ${downloadName}`
+            : `Downloading ${downloadName}`,
         "ok"
       );
       return true;
@@ -1056,17 +1065,17 @@ function TreeNode(props) {
           </span>
           <span class="tree__name">{props.entry.name}</span>
         </button>
+        <button
+          type="button"
+          class="tree__action"
+          style={{ opacity: 1 }}
+          aria-label={(isDir() ? "Download folder " : "Download ") + props.entry.path}
+          title={isDir() ? `Download folder ${props.entry.path} as zip` : `Download ${props.entry.path}`}
+          onClick={() => props.onDownload(props.entry.path)}
+        >
+          ↓
+        </button>
         <Show when={!isDir()}>
-          <button
-            type="button"
-            class="tree__action"
-            style={{ opacity: 1 }}
-            aria-label={"Download " + props.entry.path}
-            title={"Download " + props.entry.path}
-            onClick={() => props.onDownload(props.entry.path)}
-          >
-            ↓
-          </button>
           <button
             type="button"
             class="tree__action"
