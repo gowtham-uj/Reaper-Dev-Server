@@ -121,12 +121,13 @@ export function ProjectTerminal(props) {
   const sessionMutationWaiters = [];
   const [hasSelection, setHasSelection] = createSignal(false);
   const [selectMode, setSelectMode] = createSignal(false);
+  const [selOverlay, setSelOverlay] = createSignal(null);
   const [findOpen, setFindOpen] = createSignal(false);
   const [findQuery, setFindQuery] = createSignal("");
   const [findResults, setFindResults] = createSignal({ resultIndex: 0, resultCount: 0 });
   const [fontSize, setFontSize] = createSignal(DEFAULT_FONT_SIZE);
   const [dimensions, setDimensions] = createSignal({ cols: 80, rows: 24 });
-  const [renderer] = createSignal("Canvas");
+  const [renderer, setRenderer] = createSignal("Canvas");
   const [toolNotice, setToolNotice] = createSignal("");
   const [mobileControlsOpen, setMobileControlsOpen] = createSignal(false);
   const [mobileScrollMaximum, setMobileScrollMaximum] = createSignal(0);
@@ -1188,6 +1189,7 @@ export function ProjectTerminal(props) {
   }
 
   let pendingCopyText = null;
+  let selectText = null;
   let documentSelectionHandler = null;
 
   function selectionState() {
@@ -1205,10 +1207,26 @@ export function ProjectTerminal(props) {
     return selection.anchorNode && hostRef?.contains(selection.anchorNode) ? selection.toString() : "";
   }
 
+  function detectRenderer() {
+    try {
+      const element = term?.element;
+      if (!element) return "Unknown";
+      if (element.querySelector("canvas.xterm-link-layer")) return "WebGL";
+      if (element.querySelector(".xterm-rows")) return "DOM";
+      if (element.querySelector("canvas")) return "Canvas";
+    } catch {}
+    return "Unknown";
+  }
+
+  function activeSelectionText() {
+    if (selOverlay() && selectText) return selectText;
+    return currentSelectionText();
+  }
+
   async function copy(forcedSelection = null) {
-    const selection = forcedSelection ?? currentSelectionText();
+    const selection = forcedSelection ?? activeSelectionText();
     if (!selection) {
-      notifyTool("Select terminal text to copy. TUI apps: enable Select mode or hold Shift while dragging.");
+      notifyTool(`Select terminal text to copy. TUI apps: enable Select mode or hold Shift while dragging. [renderer=${renderer()}]`);
       term?.focus();
       return;
     }
@@ -1415,6 +1433,7 @@ export function ProjectTerminal(props) {
     } catch {
       webgl = undefined;
     }
+    setTimeout(() => setRenderer(detectRenderer()), 0);
 
     // Select mode: drive xterm selection from raw pointer events so text can
     // be selected even while a TUI application has mouse tracking enabled.
@@ -1442,40 +1461,82 @@ export function ProjectTerminal(props) {
       if (bufferRow < 0 || bufferRow >= term.buffer.active.length) return null;
       return { viewportRow, bufferRow };
     };
+    const bufferRangeText = (first, last) => {
+      const buffer = term?.buffer?.active;
+      if (!buffer) return "";
+      const lines = [];
+      for (let row = first; row <= last; row += 1) {
+        const line = buffer.getLine(row);
+        if (line) lines.push(line.translateToString(true));
+      }
+      return lines.join("\n");
+    };
+    const updateSelectRange = (first, last) => {
+      if (!term) return;
+      const rows = term.rows;
+      const viewportY = term.buffer.active.viewportY;
+      const firstView = Math.max(0, first - viewportY);
+      const lastView = Math.min(rows - 1, last - viewportY);
+      term.select(0, first, (last - first + 1) * term.cols);
+      selectText = bufferRangeText(first, last);
+      const screen = terminalCanvasRef?.querySelector?.(".xterm-screen");
+      const host = hostRef;
+      if (!screen || !host) { setSelOverlay(null); return; }
+      const screenRect = screen.getBoundingClientRect();
+      const hostRect = host.getBoundingClientRect();
+      const cell = selectCell();
+      const top = Math.max(0, screenRect.top - hostRect.top + firstView * cell.height);
+      const bottom = Math.min(hostRect.height, screenRect.top - hostRect.top + (lastView + 1) * cell.height);
+      setSelOverlay({
+        top,
+        height: Math.max(0, bottom - top),
+        left: Math.max(0, screenRect.left - hostRect.left),
+        right: Math.min(screenRect.right, hostRect.right) - hostRect.left,
+      });
+    };
     const selectModePointerDown = (event) => {
-      if (!selectMode()) return;
-      if (event.button !== 0 || !term) return;
+      if (!selectMode() || !term) return;
+      if (event.button !== 0 && event.pointerType !== "touch") return;
       event.preventDefault();
       event.stopPropagation();
       const row = selectRowAt(event.clientY);
       if (row === null) return;
-      term.select(0, row.bufferRow, term.cols);
-      term.focus();
+      selectText = null;
       selectDrag = { startRow: row.bufferRow, lastRow: row.bufferRow };
+      updateSelectRange(row.bufferRow, row.bufferRow);
+      term.focus();
       setHasSelection(true);
     };
     const selectModePointerMove = (event) => {
       if (!selectDrag || !selectMode() || !term) return;
+      if (event.pointerType !== "touch" && event.buttons !== 1) return;
       const row = selectRowAt(event.clientY);
       if (row === null || row.bufferRow === selectDrag.lastRow) return;
       selectDrag.lastRow = row.bufferRow;
       const first = Math.min(selectDrag.startRow, row.bufferRow);
       const last = Math.max(selectDrag.startRow, row.bufferRow);
       term.focus();
-      term.select(0, first, (last - first + 1) * term.cols);
+      updateSelectRange(first, last);
     };
     const selectModePointerUp = () => {
-      if (selectDrag) setHasSelection(Boolean(term?.hasSelection()));
+      if (selectDrag) setHasSelection(Boolean(selectText));
       selectDrag = null;
     };
+    const selectModeTouchStart = (event) => {
+      if (!selectMode() || !term) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
     const selectModeElement = () => term?.element;
-    selectModeElement()?.addEventListener("mousedown", selectModePointerDown, true);
-    document.addEventListener("mousemove", selectModePointerMove, true);
-    document.addEventListener("mouseup", selectModePointerUp, true);
+    selectModeElement()?.addEventListener("pointerdown", selectModePointerDown, true);
+    selectModeElement()?.addEventListener("touchstart", selectModeTouchStart, true);
+    document.addEventListener("pointermove", selectModePointerMove, true);
+    document.addEventListener("pointerup", selectModePointerUp, true);
     const removeSelectModeListeners = () => {
-      selectModeElement()?.removeEventListener("mousedown", selectModePointerDown, true);
-      document.removeEventListener("mousemove", selectModePointerMove, true);
-      document.removeEventListener("mouseup", selectModePointerUp, true);
+      selectModeElement()?.removeEventListener("pointerdown", selectModePointerDown, true);
+      selectModeElement()?.removeEventListener("touchstart", selectModeTouchStart, true);
+      document.removeEventListener("pointermove", selectModePointerMove, true);
+      document.removeEventListener("pointerup", selectModePointerUp, true);
     };
     if (document.fonts) {
       fontLoadingHandler = () => {
@@ -1830,7 +1891,7 @@ export function ProjectTerminal(props) {
             ref={hostRef}
             id={panelId()}
             class="terminal-host"
-            role="tabpanel"
+            classList={{ "terminal-host--selecting": selectMode() }}
             tabIndex="-1"
             aria-labelledby={selectedName() ? tabId(selectedName()) : undefined}
             aria-label={selectedName() ? undefined : `Interactive project terminal for ${props.name}`}
@@ -1841,6 +1902,18 @@ export function ProjectTerminal(props) {
             }}
           >
             <div ref={terminalCanvasRef} class="terminal-host__canvas"></div>
+            <Show when={selOverlay()}>
+              <div
+                class="terminal-select-overlay"
+                aria-hidden="true"
+                style={{
+                  top: `${selOverlay().top}px`,
+                  height: `${selOverlay().height}px`,
+                  left: `${selOverlay().left}px`,
+                  width: `${selOverlay().right - selOverlay().left}px`,
+                }}
+              ></div>
+            </Show>
             <div
               class="terminal-scroll-control terminal-mobile-overlay"
               onClick={(event) => event.stopPropagation()}
@@ -1948,6 +2021,11 @@ export function ProjectTerminal(props) {
                 onClick={() => {
                   const next = !selectMode();
                   setSelectMode(next);
+                  if (!next) {
+                    setSelOverlay(null);
+                    selectText = null;
+                    term?.clearSelection();
+                  }
                   notifyTool(next
                     ? "Select mode on: drag to select terminal text (mouse input paused)."
                     : "Select mode off.");
@@ -1960,7 +2038,7 @@ export function ProjectTerminal(props) {
                 disabled={!connected()}
                 onMouseDown={(event) => {
                   event.preventDefault();
-                  pendingCopyText = currentSelectionText() || null;
+                  pendingCopyText = activeSelectionText() || null;
                 }}
                 onClick={() => {
                   const text = pendingCopyText;

@@ -746,6 +746,16 @@ input, textarea, select { font: inherit; color: inherit; }
   touch-action: pan-x pan-y;
 }
 .terminal-host .xterm-screen canvas { image-rendering: auto; }
+.terminal-host--selecting,
+.terminal-host--selecting .xterm,
+.terminal-host--selecting .xterm-viewport { touch-action: none; }
+.terminal-select-overlay {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  background: rgba(96, 155, 255, 0.18);
+  border-radius: 2px;
+}
 .app__main,
 .tabs,
 .terminal-tabs__list,
