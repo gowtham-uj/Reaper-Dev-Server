@@ -1162,6 +1162,28 @@ export function ProjectTerminal(props) {
     });
   }
 
+  function fallbackCopyText(text) {
+    try {
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.left = "-9999px";
+      area.style.top = "0";
+      document.body.appendChild(area);
+      const previous = document.activeElement;
+      area.focus();
+      area.select();
+      area.setSelectionRange(0, text.length);
+      const ok = document.execCommand("copy");
+      document.body.removeChild(area);
+      previous?.focus?.();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+
   async function copy() {
     const selection = term?.getSelection();
     if (!selection) {
@@ -1169,13 +1191,17 @@ export function ProjectTerminal(props) {
       term?.focus();
       return;
     }
+    let copied = false;
     try {
-      if (!navigator.clipboard?.writeText) throw new Error("Clipboard access is unavailable");
-      await navigator.clipboard.writeText(selection);
-      notifyTool("Copied selection.");
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(selection);
+        copied = true;
+      }
     } catch {
-      notifyTool("Clipboard access was blocked. Use your browser copy shortcut.");
+      copied = false;
     }
+    if (!copied) copied = fallbackCopyText(selection);
+    notifyTool(copied ? "Copied selection." : "Clipboard access was blocked. Use your browser copy shortcut.");
     term?.focus();
   }
 
@@ -1380,6 +1406,16 @@ export function ProjectTerminal(props) {
         event.preventDefault();
         void copy();
         return false;
+      }
+      if (key === "c" && !event.shiftKey) {
+        // Plain Ctrl+C copies when text is selected; otherwise it passes
+        // through to the shell so SIGINT keeps working.
+        if (term?.hasSelection()) {
+          event.preventDefault();
+          void copy();
+          return false;
+        }
+        return true;
       }
       if (event.shiftKey && key === "v") {
         event.preventDefault();
