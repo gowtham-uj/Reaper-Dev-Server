@@ -1226,7 +1226,7 @@ export function ProjectTerminal(props) {
   async function copy(forcedSelection = null) {
     const selection = forcedSelection ?? activeSelectionText();
     if (!selection) {
-      notifyTool(`Select terminal text to copy. TUI apps: enable Select mode or hold Shift while dragging. [renderer=${renderer()}]`);
+      notifyTool(`Select terminal text to copy. Drag across the text first. [renderer=${renderer()}]`);
       term?.focus();
       return;
     }
@@ -1435,9 +1435,12 @@ export function ProjectTerminal(props) {
     }
     setTimeout(() => setRenderer(detectRenderer()), 0);
 
-    // Select mode: drive xterm selection from raw pointer events so text can
-    // be selected even while a TUI application has mouse tracking enabled.
+    // Selection: xterm disables its selection service whenever a TUI enables
+    // mouse tracking, so plain drags cannot select. Select mode hijacks drags
+    // explicitly; auto mode takes over a drag once it moves past a threshold,
+    // so selection works everywhere without a mode toggle.
     let selectDrag = null;
+    let autoDrag = null;
     const selectCell = () => {
       const fallback = {
         width: Math.max(1, (term?.options?.fontSize ?? 14) * 0.6),
@@ -1494,47 +1497,86 @@ export function ProjectTerminal(props) {
         right: Math.min(screenRect.right, hostRect.right) - hostRect.left,
       });
     };
+    const mouseEventsActive = () => {
+      try { return Boolean(term?._core?.coreMouseService?.areMouseEventsActive); } catch { return false; }
+    };
     const selectModePointerDown = (event) => {
-      if (!selectMode() || !term) return;
+      if (!term) return;
       if (event.button !== 0 && event.pointerType !== "touch") return;
-      event.preventDefault();
-      event.stopPropagation();
-      const row = selectRowAt(event.clientY);
-      if (row === null) return;
-      selectText = null;
-      selectDrag = { startRow: row.bufferRow, lastRow: row.bufferRow };
-      updateSelectRange(row.bufferRow, row.bufferRow);
-      term.focus();
-      setHasSelection(true);
+      autoDrag = null;
+      if (selectMode()) {
+        event.preventDefault();
+        event.stopPropagation();
+        const row = selectRowAt(event.clientY);
+        if (row === null) return;
+        selectText = null;
+        selectDrag = { startRow: row.bufferRow, lastRow: row.bufferRow };
+        updateSelectRange(row.bufferRow, row.bufferRow);
+        term.focus();
+        setHasSelection(true);
+        return;
+      }
+      if (mouseEventsActive()) {
+        setSelOverlay(null);
+        selectText = null;
+        autoDrag = { x: event.clientX, y: event.clientY, row: selectRowAt(event.clientY) };
+      }
     };
     const selectModePointerMove = (event) => {
-      if (!selectDrag || !selectMode() || !term) return;
+      if (!term) return;
       if (event.pointerType !== "touch" && event.buttons !== 1) return;
+      if (autoDrag) {
+        const dx = event.clientX - autoDrag.x;
+        const dy = event.clientY - autoDrag.y;
+        if (dx * dx + dy * dy < 64) return;
+        const startRow = autoDrag.row?.bufferRow;
+        autoDrag = null;
+        if (startRow == null) return;
+        selectDrag = { startRow, lastRow: startRow };
+        selectText = null;
+        updateSelectRange(startRow, startRow);
+        setHasSelection(true);
+        term.focus();
+      }
+      if (!selectDrag) return;
+      event.preventDefault();
+      event.stopPropagation();
       const row = selectRowAt(event.clientY);
       if (row === null || row.bufferRow === selectDrag.lastRow) return;
       selectDrag.lastRow = row.bufferRow;
       const first = Math.min(selectDrag.startRow, row.bufferRow);
       const last = Math.max(selectDrag.startRow, row.bufferRow);
-      term.focus();
       updateSelectRange(first, last);
     };
-    const selectModePointerUp = () => {
-      if (selectDrag) setHasSelection(Boolean(selectText));
-      selectDrag = null;
+    const selectModePointerUp = (event) => {
+      autoDrag = null;
+      if (selectDrag) {
+        event.preventDefault();
+        event.stopPropagation();
+        setHasSelection(Boolean(selectText));
+        selectDrag = null;
+      }
     };
     const selectModeTouchStart = (event) => {
       if (!selectMode() || !term) return;
       event.preventDefault();
       event.stopPropagation();
     };
+    const selectModeTouchMove = (event) => {
+      if (!selectDrag || !term) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
     const selectModeElement = () => term?.element;
     selectModeElement()?.addEventListener("pointerdown", selectModePointerDown, true);
     selectModeElement()?.addEventListener("touchstart", selectModeTouchStart, true);
+    selectModeElement()?.addEventListener("touchmove", selectModeTouchMove, true);
     document.addEventListener("pointermove", selectModePointerMove, true);
     document.addEventListener("pointerup", selectModePointerUp, true);
     const removeSelectModeListeners = () => {
       selectModeElement()?.removeEventListener("pointerdown", selectModePointerDown, true);
       selectModeElement()?.removeEventListener("touchstart", selectModeTouchStart, true);
+      selectModeElement()?.removeEventListener("touchmove", selectModeTouchMove, true);
       document.removeEventListener("pointermove", selectModePointerMove, true);
       document.removeEventListener("pointerup", selectModePointerUp, true);
     };
