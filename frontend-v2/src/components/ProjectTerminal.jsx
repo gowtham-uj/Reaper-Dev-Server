@@ -1184,8 +1184,10 @@ export function ProjectTerminal(props) {
     }
   }
 
-  async function copy() {
-    const selection = term?.getSelection();
+  let pendingCopyText = null;
+
+  async function copy(forcedSelection = null) {
+    const selection = forcedSelection ?? term?.getSelection();
     if (!selection) {
       notifyTool("Select terminal text to copy.");
       term?.focus();
@@ -1210,9 +1212,24 @@ export function ProjectTerminal(props) {
     const streamId = activeStreamId;
     const stream = streams.get(streamId);
     const interactionGeneration = activeInteractionGeneration;
+    let text = null;
     try {
-      if (!navigator.clipboard?.readText) throw new Error("Clipboard access is unavailable");
-      const text = await navigator.clipboard.readText();
+      if (navigator.clipboard?.readText) text = await navigator.clipboard.readText();
+      else if (navigator.clipboard?.read) {
+        const items = await navigator.clipboard.read();
+        for (const item of items) {
+          if (item.types.includes("text/plain")) {
+            text = await (await item.getType("text/plain")).text();
+            break;
+          }
+        }
+      }
+    } catch {
+      text = null;
+    }
+    if (text === null) {
+      notifyTool("Clipboard access was blocked. Press Ctrl+V or use your browser paste shortcut.");
+    } else {
       if (
         streams.get(streamId) !== stream ||
         activeStreamId !== streamId ||
@@ -1225,8 +1242,6 @@ export function ProjectTerminal(props) {
       }
       if (text) term?.paste(text);
       notifyTool(text ? "Pasted from clipboard." : "Clipboard is empty.");
-    } catch {
-      notifyTool("Clipboard access was blocked. Use your browser paste shortcut.");
     }
     if (props.active !== false && activeInteractionGeneration === interactionGeneration) term?.focus();
   }
@@ -1834,8 +1849,29 @@ export function ProjectTerminal(props) {
 
           <div class="terminal-controls" role="group" aria-label="Terminal tools and connection details">
             <div class="terminal-controls__group" role="group" aria-label="Terminal tools">
-              <button class="terminal-control" type="button" disabled={!hasSelection()} onClick={() => void copy()} title="Copy selected text (Ctrl+Shift+C)">Copy</button>
-              <button class="terminal-control" type="button" disabled={!connected()} onClick={() => void paste()} title="Paste from clipboard (Ctrl+Shift+V)">Paste</button>
+              <button
+                class="terminal-control"
+                type="button"
+                disabled={!hasSelection()}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  pendingCopyText = term?.getSelection() || null;
+                }}
+                onClick={() => {
+                  const text = pendingCopyText;
+                  pendingCopyText = null;
+                  void copy(text);
+                }}
+                title="Copy selected text (Ctrl+Shift+C)"
+              >Copy</button>
+              <button
+                class="terminal-control"
+                type="button"
+                disabled={!connected()}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => void paste()}
+                title="Paste from clipboard (Ctrl+Shift+V)"
+              >Paste</button>
               <button class="terminal-control" type="button" onClick={openFind} title="Find in scrollback (Ctrl+Shift+F)">Find</button>
               <button class="terminal-control" type="button" onClick={clearView} title="Clear this view without stopping the session">Clear</button>
               <div class="terminal-zoom" role="group" aria-label="Terminal text size">
