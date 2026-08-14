@@ -1185,9 +1185,25 @@ export function ProjectTerminal(props) {
   }
 
   let pendingCopyText = null;
+  let documentSelectionHandler = null;
+
+  function selectionState() {
+    if (term?.hasSelection()) return true;
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || !selection.toString().trim()) return false;
+    return Boolean(selection.anchorNode && hostRef?.contains(selection.anchorNode));
+  }
+
+  function currentSelectionText() {
+    const own = term?.getSelection();
+    if (own) return own;
+    const selection = window.getSelection();
+    if (!selection || !selection.toString()) return "";
+    return selection.anchorNode && hostRef?.contains(selection.anchorNode) ? selection.toString() : "";
+  }
 
   async function copy(forcedSelection = null) {
-    const selection = forcedSelection ?? term?.getSelection();
+    const selection = forcedSelection ?? currentSelectionText();
     if (!selection) {
       notifyTool("Select terminal text to copy.");
       term?.focus();
@@ -1425,7 +1441,7 @@ export function ProjectTerminal(props) {
       if (key === "c" && !event.shiftKey) {
         // Plain Ctrl+C copies when text is selected; otherwise it passes
         // through to the shell so SIGINT keeps working.
-        if (term?.hasSelection()) {
+        if (selectionState()) {
           event.preventDefault();
           void copy();
           return false;
@@ -1455,6 +1471,9 @@ export function ProjectTerminal(props) {
       return true;
     });
 
+    documentSelectionHandler = () => setHasSelection(selectionState());
+    document.addEventListener("selectionchange", documentSelectionHandler);
+
     const resizeObserver = new ResizeObserver(scheduleFit);
     resizeObserver.observe(workspaceRef);
     resizeObserver.observe(hostRef);
@@ -1463,7 +1482,7 @@ export function ProjectTerminal(props) {
     window.visualViewport?.addEventListener("resize", onResize);
     terminalEventDisposables = [
       term.onData(queueInput),
-      term.onSelectionChange(() => setHasSelection(term.hasSelection())),
+      term.onSelectionChange(() => setHasSelection(selectionState())),
       term.onScroll((position) => syncMobileScroll(position)),
       term.onWriteParsed(() => syncMobileScroll())
     ];
@@ -1511,7 +1530,7 @@ export function ProjectTerminal(props) {
       if (helloAcknowledged && !activeStreamId && loaded[0]) openSession(selectedName() || loaded[0].name, { focus: false });
     });
     void connectWebSocket();
-    requestAnimationFrame(scheduleFit);
+
 
     onCleanup(() => {
       disposed = true;
@@ -1529,6 +1548,7 @@ export function ProjectTerminal(props) {
       document.removeEventListener("keydown", documentKeyHandler);
       document.removeEventListener("focusin", documentFocusHandler);
       document.removeEventListener("pointerdown", documentPointerHandler, true);
+      document.removeEventListener("selectionchange", documentSelectionHandler);
       restoreOutsideWorkspace();
       window.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("resize", onResize);
@@ -1852,10 +1872,10 @@ export function ProjectTerminal(props) {
               <button
                 class="terminal-control"
                 type="button"
-                disabled={!hasSelection()}
+                disabled={!connected()}
                 onMouseDown={(event) => {
                   event.preventDefault();
-                  pendingCopyText = term?.getSelection() || null;
+                  pendingCopyText = currentSelectionText() || null;
                 }}
                 onClick={() => {
                   const text = pendingCopyText;
