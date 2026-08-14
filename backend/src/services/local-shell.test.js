@@ -927,7 +927,7 @@ test("generated rcfile catalogs Claude chat models with exact safe context caps"
     ["gpt-5.6-sol", 256000, 204800],
     ["gpt-5.6-luna", 256000, 204800],
     ["gpt-5.6-terra", 256000, 204800],
-    ["glm-5.2", 1048560, 838000],
+    ["deepseek-v4-pro", 1000000, 800000],
     ["deepseek-v4-flash", 1048560, 838000],
     ["grok-4.5", 500000, 400000],
     ["grok-4.6", 500000, 400000],

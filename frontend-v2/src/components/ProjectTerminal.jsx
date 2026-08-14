@@ -4,6 +4,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SearchAddon } from "@xterm/addon-search";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { api, invalidateTerminalCsrfToken, terminalCsrfToken, terminalWebSocketUrl } from "../api.js";
 import {
   TYPES,
@@ -75,6 +76,7 @@ export function ProjectTerminal(props) {
   let term;
   let fit;
   let search;
+  let webgl;
   let searchResultDisposable;
   let terminalEventDisposables = [];
   let ws;
@@ -118,6 +120,7 @@ export function ProjectTerminal(props) {
   const sessionRevisions = new Map();
   const sessionMutationWaiters = [];
   const [hasSelection, setHasSelection] = createSignal(false);
+  const [selectMode, setSelectMode] = createSignal(false);
   const [findOpen, setFindOpen] = createSignal(false);
   const [findQuery, setFindQuery] = createSignal("");
   const [findResults, setFindResults] = createSignal({ resultIndex: 0, resultCount: 0 });
@@ -1205,7 +1208,7 @@ export function ProjectTerminal(props) {
   async function copy(forcedSelection = null) {
     const selection = forcedSelection ?? currentSelectionText();
     if (!selection) {
-      notifyTool("Select terminal text to copy.");
+      notifyTool("Select terminal text to copy. TUI apps: enable Select mode or hold Shift while dragging.");
       term?.focus();
       return;
     }
@@ -1371,8 +1374,7 @@ export function ProjectTerminal(props) {
       fontWeight: "400",
       fontWeightBold: "700",
       lineHeight: 1.08,
-      minimumContrastRatio: 4.5,
-      screenReaderMode: true,
+
       theme: {
         background: "#070709", foreground: "#e8e8ec", cursor: "#f1f1f3", cursorAccent: "#070709",
         selectionBackground: "#4b4b5573", selectionForeground: "#ffffff", selectionInactiveBackground: "#30303966",
@@ -1390,8 +1392,7 @@ export function ProjectTerminal(props) {
       cursorStyle: "block",
       cursorInactiveStyle: "outline",
       customGlyphs: true,
-      rescaleOverlappingGlyphs: true,
-      drawBoldTextInBrightColors: true,
+
       macOptionIsMeta: true,
       altClickMovesCursor: true,
       rightClickSelectsWord: true,
@@ -1408,6 +1409,74 @@ export function ProjectTerminal(props) {
       searchResultDisposable = search.onDidChangeResults((result) => setFindResults(result));
     } catch { search = undefined; }
     term.open(terminalCanvasRef);
+    try {
+      webgl = new WebglAddon();
+      term.loadAddon(webgl);
+    } catch {
+      webgl = undefined;
+    }
+
+    // Select mode: drive xterm selection from raw pointer events so text can
+    // be selected even while a TUI application has mouse tracking enabled.
+    let selectDrag = null;
+    const selectCell = () => {
+      const fallback = {
+        width: Math.max(1, (term?.options?.fontSize ?? 14) * 0.6),
+        height: Math.max(1, (term?.options?.fontSize ?? 14) * (term?.options?.lineHeight ?? 1.08))
+      };
+      try {
+        const dims = term?._core?._renderService?.dimensions?.css?.cell;
+        return (dims && dims.width > 0 && dims.height > 0) ? dims : fallback;
+      } catch {
+        return fallback;
+      }
+    };
+    const selectRowAt = (clientY) => {
+      const screen = terminalCanvasRef?.querySelector?.(".xterm-screen");
+      if (!screen || !term) return null;
+      const rect = screen.getBoundingClientRect();
+      const cell = selectCell();
+      const viewportRow = Math.max(0, Math.floor((clientY - rect.top) / cell.height));
+      const base = term.buffer.active.viewportY;
+      const bufferRow = base + viewportRow;
+      if (bufferRow < 0 || bufferRow >= term.buffer.active.length) return null;
+      return { viewportRow, bufferRow };
+    };
+    const selectModePointerDown = (event) => {
+      if (!selectMode()) return;
+      if (event.button !== 0 || !term) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const row = selectRowAt(event.clientY);
+      if (row === null) return;
+      term.select(0, row.bufferRow, term.cols);
+      term.focus();
+      selectDrag = { startRow: row.bufferRow, lastRow: row.bufferRow };
+      setHasSelection(true);
+    };
+    const selectModePointerMove = (event) => {
+      if (!selectDrag || !selectMode() || !term) return;
+      const row = selectRowAt(event.clientY);
+      if (row === null || row.bufferRow === selectDrag.lastRow) return;
+      selectDrag.lastRow = row.bufferRow;
+      const first = Math.min(selectDrag.startRow, row.bufferRow);
+      const last = Math.max(selectDrag.startRow, row.bufferRow);
+      term.focus();
+      term.select(0, first, (last - first + 1) * term.cols);
+    };
+    const selectModePointerUp = () => {
+      if (selectDrag) setHasSelection(Boolean(term?.hasSelection()));
+      selectDrag = null;
+    };
+    const selectModeElement = () => term?.element;
+    selectModeElement()?.addEventListener("mousedown", selectModePointerDown, true);
+    document.addEventListener("mousemove", selectModePointerMove, true);
+    document.addEventListener("mouseup", selectModePointerUp, true);
+    const removeSelectModeListeners = () => {
+      selectModeElement()?.removeEventListener("mousedown", selectModePointerDown, true);
+      document.removeEventListener("mousemove", selectModePointerMove, true);
+      document.removeEventListener("mouseup", selectModePointerUp, true);
+    };
     if (document.fonts) {
       fontLoadingHandler = () => {
         if (disposed || !term) return;
@@ -1549,6 +1618,7 @@ export function ProjectTerminal(props) {
       document.removeEventListener("focusin", documentFocusHandler);
       document.removeEventListener("pointerdown", documentPointerHandler, true);
       document.removeEventListener("selectionchange", documentSelectionHandler);
+      removeSelectModeListeners();
       restoreOutsideWorkspace();
       window.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("resize", onResize);
@@ -1869,6 +1939,21 @@ export function ProjectTerminal(props) {
 
           <div class="terminal-controls" role="group" aria-label="Terminal tools and connection details">
             <div class="terminal-controls__group" role="group" aria-label="Terminal tools">
+              <button
+                class="terminal-control"
+                classList={{ "terminal-control--active": selectMode() }}
+                type="button"
+                aria-pressed={selectMode()}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  const next = !selectMode();
+                  setSelectMode(next);
+                  notifyTool(next
+                    ? "Select mode on: drag to select terminal text (mouse input paused)."
+                    : "Select mode off.");
+                }}
+                title="Toggle text selection mode"
+              >Select</button>
               <button
                 class="terminal-control"
                 type="button"

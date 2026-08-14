@@ -45,7 +45,7 @@ const CLAUDE_CHAT_MODELS = Object.freeze([
   Object.freeze({ id: "gpt-5.6-sol", context: 256_000, compact: 204_800 }),
   Object.freeze({ id: "gpt-5.6-luna", context: 256_000, compact: 204_800 }),
   Object.freeze({ id: "gpt-5.6-terra", context: 256_000, compact: 204_800 }),
-  Object.freeze({ id: "glm-5.2", context: 1_048_560, compact: 838_000 }),
+  Object.freeze({ id: "deepseek-v4-pro", context: 1_000_000, compact: 800_000 }),
   Object.freeze({ id: "deepseek-v4-flash", context: 1_048_560, compact: 838_000 }),
   Object.freeze({ id: "grok-4.5", context: 500_000, compact: 400_000 }),
   Object.freeze({ id: "grok-4.6", context: 500_000, compact: 400_000 }),
