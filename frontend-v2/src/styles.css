@@ -850,11 +850,14 @@ input, textarea, select { font: inherit; color: inherit; }
   .app__main {
     overflow-x: hidden;
     overflow-y: scroll;
-    padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: 0;
     scrollbar-gutter: stable;
   }
-  .page { padding: var(--s-4) var(--s-4) var(--s-7); }
-  .page--wide { padding: 0 var(--s-4) var(--s-7); }
+  .page {
+    flex: 1 0 auto;
+    padding: var(--s-4) var(--s-4) calc(var(--s-7) + 72px + env(safe-area-inset-bottom, 0px));
+  }
+  .page--wide { padding: 0 var(--s-4) calc(var(--s-7) + 72px + env(safe-area-inset-bottom, 0px)); }
   .project-page { flex: 0 0 auto; min-height: 100%; }
   .project-panel { flex: 0 0 auto; }
   .project-page--terminal { flex: 1 1 auto; }
