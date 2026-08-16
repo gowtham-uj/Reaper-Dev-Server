@@ -23,8 +23,9 @@ export default function Login() {
         method: "POST",
         body: JSON.stringify({ username: username(), password: password() })
       });
-      setCurrentUser(session.user);
-      nav(returnTarget(), { replace: true });
+      const target = returnTarget();
+      if (/^https?:\/\//.test(target)) window.location.href = target;
+      else nav(target, { replace: true });
     } catch (e) {
       setErr(e.message);
     } finally {

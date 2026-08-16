@@ -1059,11 +1059,15 @@ function validatePorts(value) {
   return value.map((item) => {
     const containerPort = Number(item?.containerPort);
     const subdomain = String(item?.subdomain || "").trim().toLowerCase();
+    const perPortAuth = item?.requireReaperAuth;
+    if (perPortAuth !== undefined && typeof perPortAuth !== "boolean") throw new Error("requireReaperAuth must be a boolean when set per port");
     if (!Number.isInteger(containerPort) || containerPort < 1 || containerPort > 65535) throw new Error("containerPort must be an integer from 1 to 65535");
     if (!SUBDOMAIN_RE.test(subdomain)) throw new Error("subdomain must be a valid DNS label");
     if (seenPorts.has(containerPort) || seenDomains.has(subdomain)) throw new Error("ports and subdomains must be unique");
     seenPorts.add(containerPort); seenDomains.add(subdomain);
-    return { containerPort, subdomain };
+    return perPortAuth === undefined
+      ? { containerPort, subdomain }
+      : { containerPort, subdomain, requireReaperAuth: perPortAuth };
   }).sort((a, b) => a.subdomain.localeCompare(b.subdomain) || a.containerPort - b.containerPort);
 }
 
@@ -1148,7 +1152,7 @@ function publishedCaddyBlock(config, port) {
     ? "\n\ttls {\n\t\tissuer acme {\n\t\t\tdir https://acme-v02.api.letsencrypt.org/directory\n\t\t\tprofile shortlived\n\t\t}\n\t}"
     : "";
   const forwardAuth = port.requireReaperAuth !== false
-    ? "\n\tforward_auth 127.0.0.1:4000 {\n\t\turi /api/auth/me\n\t}"
+    ? "\n\tforward_auth 127.0.0.1:4000 {\n\t\turi /api/auth/gate\n\t\theader_up X-Reaper-Original-Host {http.request.host}\n\t\theader_up X-Reaper-Original-Port {http.request.hostport}\n\t\theader_up X-Reaper-Original-URI {http.request.uri}\n\t}"
     : "";
   return `${address} {${tls}\n\theader {\n\t\t-Server\n\t\tX-Content-Type-Options "nosniff"\n\t\tX-Frame-Options "SAMEORIGIN"\n\t\tReferrer-Policy "same-origin"\n\t\tX-Robots-Tag "noindex, nofollow, noarchive"\n\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"\n\t}${forwardAuth}\n\treverse_proxy ${port.ip}:${port.containerPort} {\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_access=[^;]*" ""\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_csrf=[^;]*" ""\n\t\theader_down Set-Cookie "^reaper_(access|csrf)=.*$" ""\n\t}\n}`;
 }

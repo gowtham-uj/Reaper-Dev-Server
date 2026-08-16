@@ -972,6 +972,31 @@ const auth = {
       body: { csrfToken: csrf },
       ...(existing ? {} : { cookies: { csrf } })
     };
+  },
+  gate: async (req, res) => {
+    if (getUser(req)) {
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      return res.end('{"ok":true}');
+    }
+    const host = String(req.headers["x-reaper-original-host"] || "").trim();
+    const authority = String(req.headers["x-reaper-original-port"] || "").trim(); // Caddy hostport = host:port
+    const uri = String(req.headers["x-reaper-original-uri"] || "/").trim() || "/";
+    let query = "";
+    const target = /^[a-z0-9.:\-[\]]+$/i.test(authority)
+      ? authority
+      : /^[a-z0-9.:\-[\]]+$/i.test(host)
+        ? host
+        : "";
+    if (target) {
+      const original = `https://${target}${uri.startsWith("/") ? uri : `/${uri}`}`;
+      query = `?next=${encodeURIComponent(original)}`;
+    }
+    const loginHost = String(process.env.REAPER_HOST || host.replace(/:\d+$/, "") || "localhost").trim();
+    res.statusCode = 302;
+    res.setHeader("Location", `https://${loginHost}/login${query}`);
+    res.setHeader("Cache-Control", "no-store");
+    return res.end();
   }
 };
 
@@ -1930,6 +1955,7 @@ const routes = [
   ["POST",   "/api/auth/logout", true, auth.logout],
   ["GET",    "/api/auth/csrf", true, auth.csrf],
   ["GET",    "/api/auth/me", true, auth.me],
+  ["GET",    "/api/auth/gate", false, auth.gate, true],
   ["GET",    "/api/health", false, health],
   ["GET",    "/api/ready", false, readiness],
   ["GET",    "/api/global-env", true, globalEnv.get],
@@ -2035,7 +2061,7 @@ async function handleRequest(req, res) {
   catch (error) { return sendJson(res, error.statusCode || 400, { error: error.message }); }
 
   if (req.method === "OPTIONS") { res.statusCode = 204; return res.end(); }
-  const forwardAuthRequest = pathname === "/api/auth/me" && checkForwardAuthRateLimit(req);
+  const forwardAuthRequest = (pathname === "/api/auth/me" || pathname === "/api/auth/gate") && checkForwardAuthRateLimit(req);
   const resumableChunkRequest = req.method === "PATCH" && /^\/api\/projects\/[^/]+\/uploads\/[0-9a-f-]{36}$/i.test(pathname);
   if (!forwardAuthRequest && !resumableChunkRequest && !checkGlobalRateLimit(req)) {
     return sendJson(res, 429, { error: "rate limit exceeded" });

@@ -98,20 +98,22 @@ const MOBILE_SIDEBAR_QUERY = "(max-width: 720px)";
 const RETURN_TARGET_ORIGIN = "https://reaper.local";
 
 export function safeReturnTarget(value) {
-  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return null;
-  try {
-    const target = new URL(value, RETURN_TARGET_ORIGIN);
-    if (
-      target.origin !== RETURN_TARGET_ORIGIN ||
-      target.pathname === "/login" ||
-      target.pathname.startsWith("/login/")
-    ) {
-      return null;
-    }
+  if (typeof value !== "string") return null;
+  const raw = value.trim();
+  if (!raw || raw.startsWith("//")) return null;
+  let target;
+  try { target = new URL(raw, RETURN_TARGET_ORIGIN); }
+  catch { return null; }
+  if (target.pathname === "/login" || target.pathname.startsWith("/login/")) return null;
+  if (target.origin === RETURN_TARGET_ORIGIN) {
     return `${target.pathname}${target.search}${target.hash}`;
-  } catch {
-    return null;
   }
+  // Absolute cross-origin target: allow only the same hostname as the app
+  // itself (published pod routes share the Reaper host on other ports).
+  const currentHost = typeof window !== "undefined" ? window.location.hostname : "";
+  if (!currentHost || target.hostname !== currentHost) return null;
+  if (target.protocol !== "https:") return null;
+  return `${target.origin}${target.pathname}${target.search}${target.hash}`;
 }
 
 function Shell(props) {
