@@ -249,15 +249,22 @@ async function createProject(name) {
   await fs.mkdir(path.join(root, name), { recursive: true });
 }
 
+function proxyBlockText(ip, containerPort) {
+  return `reverse_proxy ${ip}:${containerPort} {\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_access=[^;]*" ""\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_csrf=[^;]*" ""\n\t\theader_down Set-Cookie "^reaper_(access|csrf)=.*$" ""\n\t}`;
+}
+
 function expectedPublishedBlock(subdomain, containerPort, requireReaperAuth = true) {
-  const forwardAuth = requireReaperAuth
-    ? "\n\tforward_auth 127.0.0.1:4000 {\n\t\turi /api/auth/gate\n\t\theader_up X-Reaper-Original-Host {http.request.host}\n\t\theader_up X-Reaper-Original-Port {http.request.hostport}\n\t\theader_up X-Reaper-Original-URI {http.request.uri}\n\t}"
-    : "";
-  return `https://${subdomain}.example.test {\n\theader {\n\t\t-Server\n\t\tX-Content-Type-Options "nosniff"\n\t\tX-Frame-Options "SAMEORIGIN"\n\t\tReferrer-Policy "same-origin"\n\t\tX-Robots-Tag "noindex, nofollow, noarchive"\n\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"\n\t}${forwardAuth}\n\treverse_proxy 172.30.1.9:${containerPort} {\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_access=[^;]*" ""\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_csrf=[^;]*" ""\n\t\theader_down Set-Cookie "^reaper_(access|csrf)=.*$" ""\n\t}\n}`;
+  const proxy = proxyBlockText("172.30.1.9", containerPort);
+  const authPart = requireReaperAuth
+    ? `\n\t@reaper-ws-${containerPort} {\n\t\theader Connection *Upgrade*\n\t\theader Upgrade *websocket*\n\t}\n\thandle @reaper-ws-${containerPort} {\n\t\t${proxy}\n\t}\n\thandle {\n\t\tforward_auth 127.0.0.1:4000 {\n\t\t\turi /api/auth/gate\n\t\t\theader_up X-Reaper-Original-Host {http.request.host}\n\t\t\theader_up X-Reaper-Original-Port {http.request.hostport}\n\t\t\theader_up X-Reaper-Original-URI {http.request.uri}\n\t\t}\n\t\t${proxy}\n\t}`
+    : `\n\t${proxy}`;
+  return `https://${subdomain}.example.test {\n\theader {\n\t\t-Server\n\t\tX-Content-Type-Options "nosniff"\n\t\tX-Frame-Options "SAMEORIGIN"\n\t\tReferrer-Policy "same-origin"\n\t\tX-Robots-Tag "noindex, nofollow, noarchive"\n\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"\n\t}${authPart}\n}`;
 }
 
 function expectedIpPublishedBlock(containerPort) {
-  return `https://167.86.121.124:${containerPort} {\n\ttls {\n\t\tissuer acme {\n\t\t\tdir https://acme-v02.api.letsencrypt.org/directory\n\t\t\tprofile shortlived\n\t\t}\n\t}\n\theader {\n\t\t-Server\n\t\tX-Content-Type-Options "nosniff"\n\t\tX-Frame-Options "SAMEORIGIN"\n\t\tReferrer-Policy "same-origin"\n\t\tX-Robots-Tag "noindex, nofollow, noarchive"\n\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"\n\t}\n\tforward_auth 127.0.0.1:4000 {\n\t\turi /api/auth/gate\n\t\theader_up X-Reaper-Original-Host {http.request.host}\n\t\theader_up X-Reaper-Original-Port {http.request.hostport}\n\t\theader_up X-Reaper-Original-URI {http.request.uri}\n\t}\n\treverse_proxy 172.30.1.9:${containerPort} {\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_access=[^;]*" ""\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_csrf=[^;]*" ""\n\t\theader_down Set-Cookie "^reaper_(access|csrf)=.*$" ""\n\t}\n}`;
+  const proxy = proxyBlockText("172.30.1.9", containerPort);
+  const authPart = `\n\t@reaper-ws-${containerPort} {\n\t\theader Connection *Upgrade*\n\t\theader Upgrade *websocket*\n\t}\n\thandle @reaper-ws-${containerPort} {\n\t\t${proxy}\n\t}\n\thandle {\n\t\tforward_auth 127.0.0.1:4000 {\n\t\t\turi /api/auth/gate\n\t\t\theader_up X-Reaper-Original-Host {http.request.host}\n\t\t\theader_up X-Reaper-Original-Port {http.request.hostport}\n\t\t\theader_up X-Reaper-Original-URI {http.request.uri}\n\t\t}\n\t\t${proxy}\n\t}`;
+  return `https://167.86.121.124:${containerPort} {\n\ttls {\n\t\tissuer acme {\n\t\t\tdir https://acme-v02.api.letsencrypt.org/directory\n\t\t\tprofile shortlived\n\t\t}\n\t}\n\theader {\n\t\t-Server\n\t\tX-Content-Type-Options "nosniff"\n\t\tX-Frame-Options "SAMEORIGIN"\n\t\tReferrer-Policy "same-origin"\n\t\tX-Robots-Tag "noindex, nofollow, noarchive"\n\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"\n\t}${authPart}\n}`;
 }
 
 function tick(ms = 0) { return new Promise((resolve) => setTimeout(resolve, ms)); }
