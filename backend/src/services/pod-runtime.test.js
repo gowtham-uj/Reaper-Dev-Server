@@ -62,6 +62,7 @@ class FakeDocker {
       memory: overrides.memory ?? 12 * 1024 ** 3,
       memorySwap: overrides.memorySwap ?? 16 * 1024 ** 3,
       nanoCpus: overrides.nanoCpus ?? 4_000_000_000,
+      pidsLimit: overrides.pidsLimit ?? 4096,
       privileged: overrides.privileged ?? false,
       networks: new Map([[networkName, overrides.ip ?? "10.77.1.99"]])
     });
@@ -213,6 +214,8 @@ class FakeDocker {
       if (args.includes("--restart")) container.restart = args[args.indexOf("--restart") + 1];
       if (args.includes("--memory")) container.memory = 12 * 1024 ** 3;
       if (args.includes("--memory-swap")) container.memorySwap = 16 * 1024 ** 3;
+      if (args.includes("--cpus")) container.nanoCpus = Number(args[args.indexOf("--cpus") + 1]) * 1_000_000_000;
+      if (args.includes("--pids-limit")) container.pidsLimit = Number(args[args.indexOf("--pids-limit") + 1]);
       return { code: 0, stdout: container.name, stderr: "" };
     }
     if (args[0] === "start") {
@@ -362,7 +365,7 @@ test("running owned pod is live-migrated and extra networks are disconnected wit
 
 test("stopped owned pod is attached and isolated before it is started", async () => {
   const fake = new FakeDocker();
-  fake.add("alpha", { running: false });
+  fake.add("alpha", { running: false, privileged: true });
   const context = await setup(fake);
 
   const result = await ensurePod("alpha", projectPath(context, "alpha"));
@@ -385,7 +388,8 @@ test("mutable restart and resource drift is updated and re-inspected", async () 
     memory: 1024,
     memorySwap: 2048,
     nanoCpus: 1_000_000_000,
-    pidsLimit: 100
+    pidsLimit: 100,
+    privileged: true
   });
   const context = await setup(fake);
 
@@ -393,7 +397,7 @@ test("mutable restart and resource drift is updated and re-inspected", async () 
   const update = fake.calls.find(({ args }) => args[0] === "update");
   assert.deepEqual(update.args, [
     "update", "--restart", "unless-stopped",
-    "--memory", "8g", "--memory-swap", "8g",
+    "--memory", "12g", "--memory-swap", "16g",
     "--cpus", "4", "--pids-limit", "4096", podName("alpha")
   ]);
   assert.equal(result.legacySecurity, false);

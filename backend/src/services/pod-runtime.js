@@ -7,6 +7,7 @@ import * as nodePty from "node-pty";
 
 export const POD_IMAGE = process.env.REAPER_POD_IMAGE || "reaper-pod:latest";
 const POD_MEMORY_LIMIT = process.env.REAPER_POD_MEMORY_LIMIT || "12g";
+const POD_MEMORY_SWAP = process.env.REAPER_POD_MEMORY_SWAP || "16g";
 const POD_CPU_LIMIT = process.env.REAPER_POD_CPU_LIMIT || "4";
 const POD_PIDS_LIMIT = process.env.REAPER_POD_PIDS_LIMIT || "4096";
 export const POD_NETWORK_POOL = process.env.REAPER_POD_NETWORK_POOL || "10.240.0.0/16";
@@ -455,14 +456,19 @@ function expectedResourceConfiguration() {
   const unit = memoryMatch[2].toLowerCase();
   const multiplier = { "": 1, k: 1024, m: 1024 ** 2, g: GIB, t: 1024 ** 4 }[unit];
   const memory = Number(memoryMatch[1]) * multiplier;
+  const swapMatch = /^(\d+)([kmgt]?)$/i.exec(POD_MEMORY_SWAP);
+  if (!swapMatch) throw new Error("REAPER_POD_MEMORY_SWAP must be an integer with an optional binary unit");
+  const swapMultiplier = { "": 1, k: 1024, m: 1024 ** 2, g: GIB, t: 1024 ** 4 }[swapMatch[2].toLowerCase()];
+  const memorySwap = Number(swapMatch[1]) * swapMultiplier;
   const nanoCpus = Number(POD_CPU_LIMIT) * 1_000_000_000;
   const pidsLimit = Number(POD_PIDS_LIMIT);
   if (!Number.isSafeInteger(memory) || memory <= 0 ||
+      !Number.isSafeInteger(memorySwap) || memorySwap < memory ||
       !Number.isSafeInteger(nanoCpus) || nanoCpus <= 0 ||
       !Number.isSafeInteger(pidsLimit) || pidsLimit <= 0) {
     throw new Error("pod resource limits must be positive integers");
   }
-  return { memory, nanoCpus, pidsLimit };
+  return { memory, memorySwap, nanoCpus, pidsLimit };
 }
 
 function validateImmutableConfiguration(project, data) {
@@ -480,15 +486,14 @@ function validateImmutableConfiguration(project, data) {
     throw new Error(`existing pod for ${project} uses an unexpected workspace bind`);
   }
 }
-
 function mutableUpdateArgs(data) {
   const expected = expectedResourceConfiguration();
   const args = ["update"];
   if (data.HostConfig?.RestartPolicy?.Name !== "unless-stopped") {
     args.push("--restart", "unless-stopped");
   }
-  if (data.HostConfig?.Memory !== expected.memory || data.HostConfig?.MemorySwap !== expected.memory) {
-    args.push("--memory", POD_MEMORY_LIMIT, "--memory-swap", "16g");
+  if (data.HostConfig?.Memory !== expected.memory || data.HostConfig?.MemorySwap !== expected.memorySwap) {
+    args.push("--memory", POD_MEMORY_LIMIT, "--memory-swap", POD_MEMORY_SWAP);
   }
   if (data.HostConfig?.NanoCpus !== expected.nanoCpus) args.push("--cpus", POD_CPU_LIMIT);
   if (data.HostConfig?.PidsLimit !== expected.pidsLimit) args.push("--pids-limit", POD_PIDS_LIMIT);
@@ -499,7 +504,7 @@ function assertMutableConfiguration(data) {
   const expected = expectedResourceConfiguration();
   if (data.HostConfig?.RestartPolicy?.Name !== "unless-stopped" ||
       data.HostConfig?.Memory !== expected.memory ||
-      data.HostConfig?.MemorySwap !== expected.memory ||
+      data.HostConfig?.MemorySwap !== expected.memorySwap ||
       data.HostConfig?.NanoCpus !== expected.nanoCpus ||
       data.HostConfig?.PidsLimit !== expected.pidsLimit) {
     throw new Error("docker update did not apply the required pod resource and restart configuration");
@@ -582,7 +587,7 @@ export async function ensurePod(project, projectPath) {
     }
     await docker([
       "run", "-d", "--name", podName(project), "--restart", "unless-stopped",
-      "--memory", POD_MEMORY_LIMIT, "--memory-swap", "16g",
+      "--memory", POD_MEMORY_LIMIT, "--memory-swap", POD_MEMORY_SWAP,
       "--cpus", POD_CPU_LIMIT, "--pids-limit", POD_PIDS_LIMIT,
       "--privileged",
       "--network", podNetworkName(project), "--hostname", podName(project).slice("reaper-pod-".length),
