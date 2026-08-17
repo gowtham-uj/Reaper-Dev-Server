@@ -50,6 +50,9 @@ const CLAUDE_CHAT_MODELS = Object.freeze([
   Object.freeze({ id: "grok-4.5", context: 500_000, compact: 400_000 }),
   Object.freeze({ id: "grok-4.6", context: 500_000, compact: 400_000 }),
   Object.freeze({ id: "daybreak-blue-latest", context: 256_000, compact: 204_800 }),
+  Object.freeze({ id: "claude-opus-4-8", context: 1_000_000, compact: 800_000 }),
+  Object.freeze({ id: "claude-sonnet-5", context: 1_000_000, compact: 800_000 }),
+  Object.freeze({ id: "claude-opus-5", context: 1_000_000, compact: 800_000 }),
 ]);
 const CLAUDE_IMAGE_MODELS = Object.freeze([
   "gpt-image-1.5",
