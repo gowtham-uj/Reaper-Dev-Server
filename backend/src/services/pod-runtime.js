@@ -92,7 +92,7 @@ function runCommand(file, args, options = {}) {
         stderr: bounded(stderr || (error && !Number.isInteger(error.code) ? error.message : ""), maxBuffer)
       });
     });
-    if (input !== undefined) child.stdin.end(String(input));
+    if (input !== undefined) child.stdin.end(input);
   });
 }
 
@@ -615,7 +615,7 @@ export async function podExec(project, argv, opts = {}) {
   if (!Array.isArray(argv) || argv.length === 0 || argv.some((arg) => typeof arg !== "string" || arg.includes("\0"))) {
     throw new TypeError("pod exec argv must be a non-empty string array");
   }
-  if (opts.input !== undefined && typeof opts.input !== "string") throw new TypeError("pod exec input must be a string");
+  if (opts.input !== undefined && typeof opts.input !== "string" && !Buffer.isBuffer(opts.input)) throw new TypeError("pod exec input must be a string or Buffer");
   const maxBuffer = opts.maxBuffer === undefined ? OUTPUT_LIMIT : Number(opts.maxBuffer);
   if (!Number.isSafeInteger(maxBuffer) || maxBuffer < OUTPUT_LIMIT || maxBuffer > 64 * 1024 * 1024) {
     throw new TypeError("pod exec maxBuffer must be between 64 KiB and 64 MiB");
