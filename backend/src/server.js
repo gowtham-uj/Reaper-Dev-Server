@@ -323,10 +323,12 @@ let passwordChecksInWindow = 0;
 const CSRF_COOKIE = "reaper_csrf";
 
 function clientIp(req) {
-  return String(req.headers?.["x-forwarded-for"] || req.socket?.remoteAddress || "unknown")
-    .split(",")[0]
-    .trim()
-    .slice(0, 128);
+  const raw = String(req.headers?.["x-forwarded-for"] || req.socket?.remoteAddress || "unknown");
+  // Caddy appends the real peer address to the END of X-Forwarded-For; any
+  // earlier values are client-controlled and must not be trusted for rate
+  // limiting (otherwise an attacker rotates the header to evade limits).
+  const parts = raw.split(",");
+  return parts[parts.length - 1].trim().slice(0, 128) || "unknown";
 }
 
 function pruneRateLimitStore(store, now, ttl, lastPrunedAt) {

@@ -1,4 +1,4 @@
-import { createResource, createSignal, For, Show } from "solid-js";
+import { createEffect, createResource, createSignal, For, Show } from "solid-js";
 import { api } from "../api.js";
 import { TokenManager } from "../components/ProjectSettings.jsx";
 
@@ -9,11 +9,10 @@ export default function Settings() {
   const [saved, setSaved] = createSignal(null);
 
   let last = null;
-  function sync() {
+  createEffect(() => {
     const e = env();
     if (e && e !== last) { last = e; setEntries(Object.entries(e).map(([k, v]) => ({ k, v }))); }
-  }
-  sync();
+  });
 
   async function save() {
     setBusy(true);
