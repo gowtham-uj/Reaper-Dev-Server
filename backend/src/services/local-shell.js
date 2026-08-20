@@ -119,14 +119,14 @@ const MAX_CONNECTIONS_PER_USER = 8;
 const MAX_ACTIVE_STREAMS = 64;
 const MAX_ACTIVE_STREAMS_PER_USER = 32;
 const CONTROL_HANDOFF_TIMEOUT_MS = 10_000;
-const MAX_PENDING_INPUT_BYTES = 64 * 1024;
-const MAX_PENDING_INPUT_FRAMES = 128;
 const MIN_CLIENT_PING_INTERVAL_MS = 250;
-const MAX_CLIENT_FRAMES_PER_SECOND = 240;
-const MAX_CLIENT_BYTES_PER_SECOND = 2 * 1024 * 1024;
+// Ingress limits are a coarse DoS guard only. They must never be reachable by
+// normal use — large pastes always work (no practical input size limit).
+const MAX_CLIENT_FRAMES_PER_SECOND = 16_384;
+const MAX_CLIENT_BYTES_PER_SECOND = 64 * 1024 * 1024;
 const RESIZE_COALESCE_MS = 33;
 const CONTROL_INPUT_FAST_PATH_BYTES = 4096;
-const INPUT_BATCH_MAX_BYTES = 32 * 1024;
+const INPUT_BATCH_MAX_BYTES = 256 * 1024;
 const CONTROL_MODE_FORMAT = [
   "alternate_on", "cursor_flag", "keypad_cursor_flag", "keypad_flag",
   "mouse_standard_flag", "mouse_button_flag", "mouse_any_flag",
@@ -1659,10 +1659,6 @@ async function sendPodInput(stream, input) {
   const bytes = Buffer.byteLength(input);
   if (!bytes) return;
   if (stream.inputFailure) throw stream.inputFailure;
-  if (
-    stream.pendingInputBytes + bytes > MAX_PENDING_INPUT_BYTES ||
-    stream.pendingInputFrames >= MAX_PENDING_INPUT_FRAMES
-  ) throw new Error("terminal input queue limit exceeded");
   stream.pendingInputBytes += bytes;
   stream.pendingInputFrames += 1;
 
