@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import * as defaultPodRuntime from "./pod-runtime.js";
 import {
   CLAUDE_CONFIG_DIR,
+  CLAUDE_SETUP_FILE,
   initClaudeSkillsStore,
   syncClaudeSkillsToPod,
 } from "./claude-skills.js";
@@ -634,9 +635,37 @@ async function syncPodManifest(project, entries, { podReady = false } = {}) {
   await installPodText(project, "/work/.reaper/sessions.json", `${JSON.stringify(entries, null, 2)}\n`);
 }
 
+// Canonical Claude setup (settings.json) lives in the cloud_proxy pod; every
+// Claude pod gets an exact copy so the model picker, permissions, and env stay
+// consistent. Runs on every session prepare + on store updates (file watcher).
+async function syncClaudeSetupToPod(project) {
+  try {
+    if (!fss.existsSync(CLAUDE_SETUP_FILE)) return;
+    const canonical = await fsp.readFile(CLAUDE_SETUP_FILE, "utf8");
+    if (!canonical.trim()) return;
+    try { JSON.parse(canonical); } catch { console.error("[reaper] Claude setup store is not valid JSON; skipping sync"); return; }
+    const current = await readLegacyPodFile(project, `${CLAUDE_CONFIG_DIR}/settings.json`, 2 * 1024 * 1024);
+    if (current === null || current.trim() !== canonical.trim()) {
+      await installPodText(project, `${CLAUDE_CONFIG_DIR}/settings.json`, canonical);
+      console.log(`[reaper] synced Claude setup to pod ${project}`);
+    }
+  } catch (error) {
+    console.error(`[reaper] failed to sync Claude setup to ${project}:`, error.message);
+  }
+}
+
+async function syncClaudeSetupToAllPods() {
+  if (!podMode) return;
+  let entries = [];
+  try { entries = await fs.readdir(PROJECTS_ROOT, { withFileTypes: true }); } catch { return; }
+  const projects = entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".")).map((entry) => entry.name);
+  await Promise.allSettled(projects.map((project) => syncClaudeSetupToPod(project)));
+}
+
 async function preparePodSessions(project, sessions, entries = sessions, { podReady = false, shellConfig = null } = {}) {
   if (!podReady) await podRuntime.ensurePod(project, projectRoot(project));
   await syncClaudeSkillsToPod(project, podRuntime.podExec);
+  await syncClaudeSetupToPod(project);
   if (!sessions.length) {
     await syncPodManifest(project, entries, { podReady: true });
     return;
@@ -2366,7 +2395,26 @@ async function initLocalShells() {
       }
     }
   }
+  // Watch the cloud_proxy Claude-setup store: an update to settings.json
+  // propagates to every Claude pod automatically.
+  try {
+    const setupDir = path.dirname(CLAUDE_SETUP_FILE);
+    await fs.mkdir(setupDir, { recursive: true, mode: 0o700 });
+    let setupSyncTimer = null;
+    const setupWatcher = fs.watch(setupDir, (_eventType, filename) => {
+      if (typeof filename !== "string" || filename !== path.basename(CLAUDE_SETUP_FILE)) return;
+      clearTimeout(setupSyncTimer);
+      setupSyncTimer = setTimeout(() => {
+        void syncClaudeSetupToAllPods().catch((error) => console.error("[reaper] Claude setup store sync failed:", error.message));
+      }, 1500);
+    });
+    setupWatcher.on("error", () => {});
+    console.log(`[reaper] watching Claude setup store: ${CLAUDE_SETUP_FILE}`);
+  } catch (error) {
+    console.error("[reaper] failed to watch Claude setup store:", error.message);
+  }
   const caddy = await regenerateCaddyPorts({ quarantineInvalid: true, verifiedProjects });
+
   for (const project of caddy.quarantined) failures.add(project);
   return {
     backend: "pod",

@@ -6,6 +6,12 @@ const STATE_DIR = process.env.STATE_DIR || path.join(process.cwd(), ".reaper-loc
 export const CLAUDE_SKILLS_DIR = process.env.CLAUDE_SKILLS_STORE || path.join(STATE_DIR, "claude-skills");
 export const CLAUDE_CONFIG_DIR = "/work/.reaper/claude";
 export const CLAUDE_SKILLS_TARGET = `${CLAUDE_CONFIG_DIR}/skills`;
+// Single source of truth for the user's Claude custom setup (settings.json:
+// env, permissions, default model, availableModels picker, flags). Lives in
+// the cloud_proxy pod next to the skills store; synced to every Claude pod.
+export const CLAUDE_SETUP_FILE = process.env.CLAUDE_SETUP_FILE ||
+  path.join(path.dirname(CLAUDE_SKILLS_DIR), "claude-setup", "settings.json");
+export const CLAUDE_SETUP_TARGET = `${CLAUDE_CONFIG_DIR}/settings.json`;
 const MAX_FILES = 4096;
 const MAX_PATH_BYTES = 1024;
 const MAX_FILE_SIZE = 16 * 1024 * 1024;
