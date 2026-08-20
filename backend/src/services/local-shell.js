@@ -1647,8 +1647,8 @@ async function runPodInputPump(stream) {
         const bufferName = `reaper-paste-${stream.id}-${(stream.pasteCounter = (stream.pasteCounter || 0) + 1)}`;
         const result = await podRuntime.podExec(stream.project, [
           "sh", "-c",
-          `tmux -S ${shellQuote(TMUX_SOCKET)} load-buffer -b ${shellQuote(bufferName)} - && ` +
-          `tmux -S ${shellQuote(TMUX_SOCKET)} paste-buffer -b ${shellQuote(bufferName)} -p -d -t "=${shellQuote(stream.name)}:"`,
+          `tmux -S ${shellQuote(TMUX_SOCKET)} load-buffer -b '${bufferName}' - && ` +
+          `tmux -S ${shellQuote(TMUX_SOCKET)} paste-buffer -b '${bufferName}' -p -d -t "=${stream.name}:"`,
           "reaper-paste"
         ], { input });
         if (result.code !== 0) throw new Error(result.stderr || "terminal input failed");
