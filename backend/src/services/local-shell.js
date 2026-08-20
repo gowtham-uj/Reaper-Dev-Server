@@ -641,7 +641,7 @@ async function syncPodManifest(project, entries, { podReady = false } = {}) {
 async function syncClaudeSetupToPod(project) {
   try {
     if (!fss.existsSync(CLAUDE_SETUP_FILE)) return;
-    const canonical = await fsp.readFile(CLAUDE_SETUP_FILE, "utf8");
+    const canonical = await fs.readFile(CLAUDE_SETUP_FILE, "utf8");
     if (!canonical.trim()) return;
     try { JSON.parse(canonical); } catch { console.error("[reaper] Claude setup store is not valid JSON; skipping sync"); return; }
     const current = await readLegacyPodFile(project, `${CLAUDE_CONFIG_DIR}/settings.json`, 2 * 1024 * 1024);
@@ -2401,7 +2401,7 @@ async function initLocalShells() {
     const setupDir = path.dirname(CLAUDE_SETUP_FILE);
     await fs.mkdir(setupDir, { recursive: true, mode: 0o700 });
     let setupSyncTimer = null;
-    const setupWatcher = fs.watch(setupDir, (_eventType, filename) => {
+    const setupWatcher = fss.watch(setupDir, (_eventType, filename) => {
       if (typeof filename !== "string" || filename !== path.basename(CLAUDE_SETUP_FILE)) return;
       clearTimeout(setupSyncTimer);
       setupSyncTimer = setTimeout(() => {
