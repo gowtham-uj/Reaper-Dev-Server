@@ -1639,9 +1639,18 @@ async function runPodInputPump(stream) {
       if (stream.controlInput && batchBytes <= CONTROL_INPUT_FAST_PATH_BYTES) {
         await stream.controlInput(input);
       } else {
+        // tmux `send-keys -l` rejects large literals ("command too long") and
+        // floods the pane faster than the tty line discipline can buffer,
+        // silently dropping input. load-buffer + paste-buffer -p feeds the
+        // pane through tmux's paced key queue and supports arbitrarily large
+        // pastes, so every byte arrives.
+        const bufferName = `reaper-paste-${stream.id}-${(stream.pasteCounter = (stream.pasteCounter || 0) + 1)}`;
         const result = await podRuntime.podExec(stream.project, [
-          "tmux", "-S", TMUX_SOCKET, "send-keys", "-t", `=${stream.name}:`, "-l", "--", input
-        ]);
+          "sh", "-c",
+          `tmux -S ${shellQuote(TMUX_SOCKET)} load-buffer -b ${shellQuote(bufferName)} - && ` +
+          `tmux -S ${shellQuote(TMUX_SOCKET)} paste-buffer -b ${shellQuote(bufferName)} -p -d -t "=${shellQuote(stream.name)}:"`,
+          "reaper-paste"
+        ], { input });
         if (result.code !== 0) throw new Error(result.stderr || "terminal input failed");
       }
       settlePodInputBatch(stream, batch);
