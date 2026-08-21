@@ -596,7 +596,7 @@ async function ensureShellRecoveryFiles(project, name, shellConfig = {}) {
     "  __reaper_claude --model \"${__claude_id:-$__model}\" \"$@\"",
     `  local __status=$?; rm -f ${interrupted}; return "$__status"`,
     "}",
-    `claude() { __reaper_mark claude; __reaper_claude "$@"; local __status=$?; rm -f ${interrupted}; return "$__status"; }`,
+    `claude() { __reaper_mark claude; if [ "$1" = "--resume" ] && [ -n "\${2-}" ] && [ -n "\${CLAUDE_CONFIG_DIR-}" ]; then local __d __p __cwd; for __d in "\$CLAUDE_CONFIG_DIR"/projects/*/"\$2"; do [ -d "\$__d" ] || continue; __p=\${__d#*projects/}; __p=\${__p%/"\$2"}; __p=\${__p#-}; __cwd=/\${__p//-//}; if [ -d "\$__cwd" ]; then cd -- "\$__cwd" || true; break; fi; done; fi; __reaper_claude "$@"; local __status=$?; rm -f ${interrupted}; return "$__status"; }`,
     "reaper-resume() {",
     `  if [ ! -r ${interrupted} ]; then printf 'Reaper: no interrupted supported command.\\n'; return 1; fi`,
     `  local __cmd __cwd; __cmd=$(sed -n '1p' ${interrupted}); __cwd=$(sed -n '2p' ${interrupted})`,
