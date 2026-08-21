@@ -62,7 +62,7 @@ const CLAUDE_CHAT_MODELS = Object.freeze([
   Object.freeze({ id: "grok-3-mini-fast", context: 131_072, compact: 104_000 }),
   Object.freeze({ id: "grok-build-0.1", context: 200_000, compact: 160_000 }),
   Object.freeze({ id: "grok-composer-2.5-fast", context: 200_000, compact: 160_000 }),
-  Object.freeze({ id: "daybreak-blue-latest", context: 256_000, compact: 204_800 }),
+  Object.freeze({ id: "ox-alpha", context: 1_000_000, compact: 800_000 }),
   Object.freeze({ id: "sub-agent-model", context: 200_000, compact: 160_000, launch: "claude-haiku-4-5-20251001" }),
 ]);
 const CLAUDE_IMAGE_MODELS = Object.freeze([
