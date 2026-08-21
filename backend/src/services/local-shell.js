@@ -42,6 +42,7 @@ const SESSION_NAME_RE = /^[a-z0-9-]{1,32}$/;
 const DEFAULT_SHELL_ENV = Object.freeze({
   CLAUDE_CONFIG_DIR,
   IS_SANDBOX: "1",
+  CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
 });
 const CLAUDE_CHAT_MODELS = Object.freeze([
   Object.freeze({ id: "claude-opus-4-8", context: 1_000_000, compact: 800_000 }),
@@ -63,6 +64,7 @@ const CLAUDE_CHAT_MODELS = Object.freeze([
   Object.freeze({ id: "grok-build-0.1", context: 200_000, compact: 160_000 }),
   Object.freeze({ id: "grok-composer-2.5-fast", context: 200_000, compact: 160_000 }),
   Object.freeze({ id: "ox-alpha", context: 1_000_000, compact: 800_000 }),
+  Object.freeze({ id: "anthropic/opencode-zen/ox-alpha", context: 1_000_000, compact: 800_000 }),
   Object.freeze({ id: "sub-agent-model", context: 200_000, compact: 160_000, launch: "claude-haiku-4-5-20251001" }),
 ]);
 const CLAUDE_IMAGE_MODELS = Object.freeze([

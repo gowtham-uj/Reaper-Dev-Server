@@ -942,6 +942,7 @@ test("generated rcfile catalogs Claude chat models with exact safe context caps"
     ["claude-opus-4-8", 1000000, 800000],
     ["claude-sonnet-5", 1000000, 800000],
     ["claude-opus-5", 1000000, 800000],
+    ["anthropic/opencode-zen/ox-alpha", 1000000, 800000],
   ];
   assert.match(bashrc, /export CLAUDE_CONFIG_DIR='\/work\/\.reaper\/claude'/);
   for (const [id, context, compact] of models) {
