@@ -43,23 +43,34 @@ const DEFAULT_SHELL_ENV = Object.freeze({
   CLAUDE_CONFIG_DIR,
 });
 const CLAUDE_CHAT_MODELS = Object.freeze([
-  Object.freeze({ id: "gpt-5.6-sol", context: 256_000, compact: 204_800 }),
-  Object.freeze({ id: "gpt-5.6-luna", context: 256_000, compact: 204_800 }),
-  Object.freeze({ id: "gpt-5.6-terra", context: 256_000, compact: 204_800 }),
-  Object.freeze({ id: "deepseek-v4-pro", context: 1_000_000, compact: 800_000 }),
-  Object.freeze({ id: "deepseek-v4-flash", context: 1_048_560, compact: 838_000 }),
-  Object.freeze({ id: "grok-4.5", context: 500_000, compact: 400_000 }),
-  Object.freeze({ id: "grok-4.6", context: 500_000, compact: 400_000 }),
-  Object.freeze({ id: "daybreak-blue-latest", context: 256_000, compact: 204_800 }),
   Object.freeze({ id: "claude-opus-4-8", context: 1_000_000, compact: 800_000 }),
   Object.freeze({ id: "claude-sonnet-5", context: 1_000_000, compact: 800_000 }),
   Object.freeze({ id: "claude-opus-5", context: 1_000_000, compact: 800_000 }),
+  Object.freeze({ id: "gpt-5.6-sol", context: 1_050_000, compact: 840_000 }),
+  Object.freeze({ id: "gpt-5.6-luna", context: 1_050_000, compact: 840_000 }),
+  Object.freeze({ id: "gpt-5.6-terra", context: 1_050_000, compact: 840_000 }),
+  Object.freeze({ id: "deepseek-v4-pro", context: 1_000_000, compact: 800_000 }),
+  Object.freeze({ id: "deepseek-v4-flash", context: 1_000_000, compact: 800_000 }),
+  Object.freeze({ id: "grok-4.5", context: 1_000_000, compact: 800_000 }),
+  Object.freeze({ id: "grok-4.6", context: 1_000_000, compact: 800_000 }),
+  Object.freeze({ id: "grok-4.3", context: 1_000_000, compact: 800_000 }),
+  Object.freeze({ id: "grok-4.20-0309-reasoning", context: 2_000_000, compact: 1_600_000 }),
+  Object.freeze({ id: "grok-4.20-0309-non-reasoning", context: 2_000_000, compact: 1_600_000 }),
+  Object.freeze({ id: "grok-4.20-multi-agent-0309", context: 2_000_000, compact: 1_600_000 }),
+  Object.freeze({ id: "grok-3-mini", context: 131_072, compact: 104_000 }),
+  Object.freeze({ id: "grok-3-mini-fast", context: 131_072, compact: 104_000 }),
+  Object.freeze({ id: "grok-build-0.1", context: 200_000, compact: 160_000 }),
+  Object.freeze({ id: "grok-composer-2.5-fast", context: 200_000, compact: 160_000 }),
+  Object.freeze({ id: "daybreak-blue-latest", context: 256_000, compact: 204_800 }),
+  Object.freeze({ id: "sub-agent-model", context: 200_000, compact: 160_000, launch: "claude-haiku-4-5-20251001" }),
 ]);
 const CLAUDE_IMAGE_MODELS = Object.freeze([
   "gpt-image-1.5",
   "gpt-image-2",
   "grok-imagine-image",
   "grok-imagine-image-quality",
+  "grok-imagine-video",
+  "grok-imagine-video-1.5-preview",
 ]);
 const CLAUDE_LARGEST_CONTEXT = Math.max(...CLAUDE_CHAT_MODELS.map(({ context }) => context));
 const SUBDOMAIN_RE = /^(?!-)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -511,7 +522,7 @@ async function ensureShellRecoveryFiles(project, name, shellConfig = {}) {
   const history = shellQuote(runtimeFile("history"));
   const interrupted = shellQuote(runtimeFile("interrupted"));
   const claudeChatCases = CLAUDE_CHAT_MODELS
-    .map(({ id, context, compact }) => `    ${id}) __context=${context}; __compact=${compact} ;;`)
+    .map(({ id, context, compact, launch }) => `    ${id}) __context=${context}; __compact=${compact}${launch ? `; __claude_id=${launch}` : ""} ;;`)
     .join("\n");
   const claudeImageCase = CLAUDE_IMAGE_MODELS.join("|");
   const claudeModelList = CLAUDE_CHAT_MODELS
@@ -556,8 +567,8 @@ async function ensureShellRecoveryFiles(project, name, shellConfig = {}) {
     "reaper-claude-models() {",
     `  printf 'CHAT MODEL\\tCONTEXT\\tAUTO-COMPACT\\n${claudeModelList}\\n\\nIMAGE ONLY (not launchable with Claude)\\n${claudeImageList}\\n'`,
     "}",
-    "reaper-claude-model() {",
-    "  local __model=${1-} __context __compact __resume=0 __current_context __arg",
+    "__reaper_claude() { local __claude_bin=claude; [ ! -x /usr/local/bin/claude-real ] || __claude_bin=/usr/local/bin/claude-real; \"$__claude_bin\" \"$@\"; }",
+    "  local __model=${1-} __context __compact __resume=0 __current_context __arg __claude_id",
     "  if [ -z \"$__model\" ]; then printf 'Usage: reaper-claude-model <id> [--continue|--resume ...]\\nRun reaper-claude-models to list IDs.\\n' >&2; return 2; fi",
     "  shift",
     "  case \"$__model\" in",
@@ -581,7 +592,7 @@ async function ensureShellRecoveryFiles(project, name, shellConfig = {}) {
     "  REAPER_CLAUDE_MODEL=$__model",
     "  export REAPER_CLAUDE_MODEL",
     "  __reaper_mark claude",
-    "  CLAUDE_CODE_MAX_CONTEXT_TOKENS=$__context CLAUDE_CODE_AUTO_COMPACT_WINDOW=$__compact __reaper_claude --model \"$__model\" \"$@\"",
+    "  __reaper_claude --model \"${__claude_id:-$__model}\" \"$@\"",
     `  local __status=$?; rm -f ${interrupted}; return "$__status"`,
     "}",
     `claude() { __reaper_mark claude; __reaper_claude "$@"; local __status=$?; rm -f ${interrupted}; return "$__status"; }`,
