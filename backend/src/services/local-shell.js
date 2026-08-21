@@ -566,7 +566,7 @@ async function ensureShellRecoveryFiles(project, name, shellConfig = {}) {
     "reaper-claude-models() {",
     `  printf 'CHAT MODEL\\tCONTEXT\\tAUTO-COMPACT\\n${claudeModelList}\\n\\nIMAGE ONLY (not launchable with Claude)\\n${claudeImageList}\\n'`,
     "}",
-    "__reaper_claude() { local __claude_bin=claude; [ ! -x /usr/local/bin/claude-real ] || __claude_bin=/usr/local/bin/claude-real; IS_SANDBOX=1 \"$__claude_bin\" \"$@\"; }",
+    "__reaper_claude() { IS_SANDBOX=1 command claude \"$@\"; }",
     "reaper-claude-model() {",
     "  local __model=${1-} __context __compact __resume=0 __current_context __arg __claude_id",
     "  if [ -z \"$__model\" ]; then printf 'Usage: reaper-claude-model <id> [--continue|--resume ...]\\nRun reaper-claude-models to list IDs.\\n' >&2; return 2; fi",
