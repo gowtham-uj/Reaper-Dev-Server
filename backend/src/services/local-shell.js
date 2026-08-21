@@ -41,6 +41,7 @@ const TMUX_CONFIG = "/reaper/tmux.conf";
 const SESSION_NAME_RE = /^[a-z0-9-]{1,32}$/;
 const DEFAULT_SHELL_ENV = Object.freeze({
   CLAUDE_CONFIG_DIR,
+  IS_SANDBOX: "1",
 });
 const CLAUDE_CHAT_MODELS = Object.freeze([
   Object.freeze({ id: "claude-opus-4-8", context: 1_000_000, compact: 800_000 }),
