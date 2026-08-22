@@ -1199,7 +1199,7 @@ function publishedCaddyBlock(config, port) {
     : "";
   const proxyBlock = `reverse_proxy ${port.ip}:${port.containerPort} {\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_access=[^;]*" ""\n\t\theader_up Cookie "(^|;[[:space:]]*)reaper_csrf=[^;]*" ""\n\t\theader_down Set-Cookie "^reaper_(access|csrf)=.*$" ""\n\t}`;
   const forwardAuth = port.requireReaperAuth !== false
-    ? `\n\t@reaper-ws-${port.containerPort} {\n\t\theader Connection *Upgrade*\n\t\theader Upgrade *websocket*\n\t}\n\thandle @reaper-ws-${port.containerPort} {\n\t\t${proxyBlock}\n\t}\n\thandle {\n\t\tforward_auth 127.0.0.1:4000 {\n\t\t\turi /api/auth/gate\n\t\t\theader_up X-Reaper-Original-Host {http.request.host}\n\t\t\theader_up X-Reaper-Original-Port {http.request.hostport}\n\t\t\theader_up X-Reaper-Original-URI {http.request.uri}\n\t\t}\n\t\t${proxyBlock}\n\t}`
+    ? `\n\tforward_auth 127.0.0.1:4000 {\n\t\turi /api/auth/gate\n\t\theader_up -Connection\n\t\theader_up -Upgrade\n\t\theader_up X-Reaper-Original-Host {http.request.host}\n\t\theader_up X-Reaper-Original-Port {http.request.hostport}\n\t\theader_up X-Reaper-Original-URI {http.request.uri}\n\t}\n\t${proxyBlock}`
     : `\n\t${proxyBlock}`;
   return `${address} {${tls}\n\theader {\n\t\t-Server\n\t\tX-Content-Type-Options "nosniff"\n\t\tX-Frame-Options "SAMEORIGIN"\n\t\tReferrer-Policy "same-origin"\n\t\tX-Robots-Tag "noindex, nofollow, noarchive"\n\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"\n\t}${forwardAuth}\n}`;
 }

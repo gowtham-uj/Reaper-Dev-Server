@@ -256,15 +256,22 @@ function proxyBlockText(ip, containerPort) {
 function expectedPublishedBlock(subdomain, containerPort, requireReaperAuth = true) {
   const proxy = proxyBlockText("172.30.1.9", containerPort);
   const authPart = requireReaperAuth
-    ? `\n\t@reaper-ws-${containerPort} {\n\t\theader Connection *Upgrade*\n\t\theader Upgrade *websocket*\n\t}\n\thandle @reaper-ws-${containerPort} {\n\t\t${proxy}\n\t}\n\thandle {\n\t\tforward_auth 127.0.0.1:4000 {\n\t\t\turi /api/auth/gate\n\t\t\theader_up X-Reaper-Original-Host {http.request.host}\n\t\t\theader_up X-Reaper-Original-Port {http.request.hostport}\n\t\t\theader_up X-Reaper-Original-URI {http.request.uri}\n\t\t}\n\t\t${proxy}\n\t}`
+    ? `\n\tforward_auth 127.0.0.1:4000 {\n\t\turi /api/auth/gate\n\t\theader_up -Connection\n\t\theader_up -Upgrade\n\t\theader_up X-Reaper-Original-Host {http.request.host}\n\t\theader_up X-Reaper-Original-Port {http.request.hostport}\n\t\theader_up X-Reaper-Original-URI {http.request.uri}\n\t}\n\t${proxy}`
     : `\n\t${proxy}`;
   return `https://${subdomain}.example.test {\n\theader {\n\t\t-Server\n\t\tX-Content-Type-Options "nosniff"\n\t\tX-Frame-Options "SAMEORIGIN"\n\t\tReferrer-Policy "same-origin"\n\t\tX-Robots-Tag "noindex, nofollow, noarchive"\n\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"\n\t}${authPart}\n}`;
 }
 
 function expectedIpPublishedBlock(containerPort) {
   const proxy = proxyBlockText("172.30.1.9", containerPort);
-  const authPart = `\n\t@reaper-ws-${containerPort} {\n\t\theader Connection *Upgrade*\n\t\theader Upgrade *websocket*\n\t}\n\thandle @reaper-ws-${containerPort} {\n\t\t${proxy}\n\t}\n\thandle {\n\t\tforward_auth 127.0.0.1:4000 {\n\t\t\turi /api/auth/gate\n\t\t\theader_up X-Reaper-Original-Host {http.request.host}\n\t\t\theader_up X-Reaper-Original-Port {http.request.hostport}\n\t\t\theader_up X-Reaper-Original-URI {http.request.uri}\n\t\t}\n\t\t${proxy}\n\t}`;
+  const authPart = `\n\tforward_auth 127.0.0.1:4000 {\n\t\turi /api/auth/gate\n\t\theader_up -Connection\n\t\theader_up -Upgrade\n\t\theader_up X-Reaper-Original-Host {http.request.host}\n\t\theader_up X-Reaper-Original-Port {http.request.hostport}\n\t\theader_up X-Reaper-Original-URI {http.request.uri}\n\t}\n\t${proxy}`;
   return `https://167.86.121.124:${containerPort} {\n\ttls {\n\t\tissuer acme {\n\t\t\tdir https://acme-v02.api.letsencrypt.org/directory\n\t\t\tprofile shortlived\n\t\t}\n\t}\n\theader {\n\t\t-Server\n\t\tX-Content-Type-Options "nosniff"\n\t\tX-Frame-Options "SAMEORIGIN"\n\t\tReferrer-Policy "same-origin"\n\t\tX-Robots-Tag "noindex, nofollow, noarchive"\n\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"\n\t}${authPart}\n}`;
+}
+
+function publishedSiteText(generated, address) {
+  const start = generated.indexOf(`${address} {`);
+  if (start === -1) return "";
+  const next = generated.indexOf("\n\nhttps://", start);
+  return generated.slice(start, next === -1 ? generated.length : next).trimEnd();
 }
 
 function tick(ms = 0) { return new Promise((resolve) => setTimeout(resolve, ms)); }
@@ -797,7 +804,7 @@ test("pathological capture retains bounded newest rows and resets before renderi
   ws.close(1000, "done");
 });
 
-test("published ports validate input and generate deterministic safe Caddy blocks", async () => {
+test("published ports validate input and put HTTP and WebSocket traffic through one auth gate", async () => {
   await createProject("ports-project");
   const reloadsBefore = fake.reloads;
   await assert.rejects(() => shell.updateProjectPorts("ports-project", [{ containerPort: 3000, subdomain: "bad.example\nattack" }]), /subdomain/);
@@ -813,21 +820,43 @@ test("published ports validate input and generate deterministic safe Caddy block
     ],
     requireReaperAuth: true
   });
-  assert.equal(await fs.readFile(caddyFile, "utf8"), `${expectedPublishedBlock("api", 3000)}\n\n${expectedPublishedBlock("web", 8080)}\n`);
+  const generated = await fs.readFile(caddyFile, "utf8");
+  const protectedBlocks = [
+    publishedSiteText(generated, "https://api.example.test"),
+    publishedSiteText(generated, "https://web.example.test")
+  ];
+  assert.equal(generated, `${expectedPublishedBlock("api", 3000)}\n\n${expectedPublishedBlock("web", 8080)}\n`);
+  for (const block of protectedBlocks) {
+    const authIndex = block.indexOf("\tforward_auth 127.0.0.1:4000 {");
+    const proxyIndex = block.indexOf("\treverse_proxy 172.30.1.9:");
+    assert.ok(authIndex >= 0 && authIndex < proxyIndex);
+    assert.equal((block.match(/\tforward_auth /g) || []).length, 1);
+    assert.equal((block.match(/\treverse_proxy /g) || []).length, 1);
+    assert.ok(block.includes("\t\theader_up -Connection\n\t\theader_up -Upgrade"));
+    assert.ok(block.includes("\t\theader_up X-Reaper-Original-Host {http.request.host}\n\t\theader_up X-Reaper-Original-Port {http.request.hostport}\n\t\theader_up X-Reaper-Original-URI {http.request.uri}"));
+    assert.doesNotMatch(block, /@reaper-ws-|header Connection \*Upgrade\*|header Upgrade \*websocket\*/);
+    assert.doesNotMatch(block.slice(proxyIndex), /\theader_up -(?:Connection|Upgrade)/);
+  }
   assert.equal(fake.reloads, reloadsBefore + 1);
 });
 
-test("published ports can explicitly disable Reaper auth and round-trip the setting", async () => {
+test("published ports preserve global and per-port auth opt-outs and remain ungated", async () => {
   await createProject("public-ports-project");
   assert.deepEqual(await shell.getProjectPorts("public-ports-project"), { ports: [], requireReaperAuth: true });
 
   const result = await shell.updateProjectPorts(
     "public-ports-project",
-    [{ containerPort: 4173, subdomain: "public-app" }],
+    [
+      { containerPort: 4173, subdomain: "public-app" },
+      { containerPort: 4174, subdomain: "public-port", requireReaperAuth: false }
+    ],
     false
   );
   assert.deepEqual(result, {
-    ports: [{ containerPort: 4173, subdomain: "public-app" }],
+    ports: [
+      { containerPort: 4173, subdomain: "public-app" },
+      { containerPort: 4174, subdomain: "public-port", requireReaperAuth: false }
+    ],
     requireReaperAuth: false
   });
   assert.deepEqual(await shell.getProjectPorts("public-ports-project"), result);
@@ -836,11 +865,18 @@ test("published ports can explicitly disable Reaper auth and round-trip the sett
     result
   );
   const generated = await fs.readFile(caddyFile, "utf8");
-  assert.match(generated, new RegExp(expectedPublishedBlock("public-app", 4173, false).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.doesNotMatch(
-    generated.match(/https:\/\/public-app\.example\.test \{[\s\S]*?\n\}/)?.[0] || "",
-    /forward_auth/
-  );
+  const publicBlocks = [
+    ["public-app", 4173],
+    ["public-port", 4174]
+  ].map(([subdomain, port]) => [
+    publishedSiteText(generated, `https://${subdomain}.example.test`),
+    expectedPublishedBlock(subdomain, port, false)
+  ]);
+  for (const [block, expected] of publicBlocks) {
+    assert.equal(block, expected);
+    assert.equal((block.match(/\treverse_proxy /g) || []).length, 1);
+    assert.doesNotMatch(block, /forward_auth|header_up -(?:Connection|Upgrade)|@reaper-ws-/);
+  }
 });
 
 test("malformed publication auth settings are rejected fail-closed", async () => {
