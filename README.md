@@ -1,6 +1,6 @@
 # Reaper Dev Server
 
-A self-hosted dev server for the agentic era — one durable Linux pod per
+A self-hosted dev server for the agentic era - one durable Linux pod per
 project, persistent terminals, scoped tokens, and authenticated published
 ports. Files, env, and shells survive browser restarts, network drops, and
 backend redeploys.
