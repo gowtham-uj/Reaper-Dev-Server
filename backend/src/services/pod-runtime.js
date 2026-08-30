@@ -681,8 +681,11 @@ export async function destroyPod(project) {
     const network = await inspectNetwork(project, { allowMissing: true });
     await releaseLegacyAllocation(project);
     if (existing.exists) {
-      if (existing.running) await docker(["stop", podName(project)]);
-      await docker(["rm", podName(project)]);
+      // Force-remove. A graceful ``docker stop`` hangs past its timeout when
+      // the pod has live tmux/reaper-session processes that keep the entrypoint
+      // (``sleep infinity``) from reaping promptly; ``rm -f`` SIGKILLs the
+      // container and removes it in one step, which is correct for deletion.
+      await docker(["rm", "-f", podName(project)]);
     }
     if (network) await docker(["network", "rm", podNetworkName(project)]);
   });

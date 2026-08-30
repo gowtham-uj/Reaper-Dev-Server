@@ -227,8 +227,8 @@ class FakeDocker {
       return { code: 0, stdout: args[1], stderr: "" };
     }
     if (args[0] === "rm") {
-      this.containers.delete(args[1]);
-      return { code: 0, stdout: args[1], stderr: "" };
+      this.containers.delete(args.at(-1));
+      return { code: 0, stdout: args.at(-1), stderr: "" };
     }
     if (args[0] === "exec") {
       return { code: 7, stdout: "captured stdout", stderr: "captured stderr" };
@@ -478,10 +478,10 @@ test("corrupt legacy allocation state cannot abort authoritative teardown", asyn
   await destroyPod("alpha");
   assert.equal(fake.containers.has(podName("alpha")), false);
   assert.equal(fake.networks.has(podNetworkName("alpha")), false);
-  const stopIndex = fake.calls.findIndex(({ args }) => args[0] === "stop");
+  assert.equal(fake.calls.some(({ args }) => args[0] === "stop"), false);
   const removeContainerIndex = fake.calls.findIndex(({ args }) => args[0] === "rm");
   const removeNetworkIndex = fake.calls.findIndex(({ args }) => args[0] === "network" && args[1] === "rm");
-  assert.ok(stopIndex >= 0 && removeContainerIndex > stopIndex && removeNetworkIndex > removeContainerIndex);
+  assert.ok(removeContainerIndex >= 0 && removeNetworkIndex > removeContainerIndex);
 });
 
 test("destroy rejects a foreign container name collision without stopping it", async () => {
