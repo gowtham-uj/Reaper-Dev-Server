@@ -967,14 +967,13 @@ test("generated rcfile catalogs Claude chat models with exact safe context caps"
     .filter((item) => item.project === "claude-model-catalog" && item.target.endsWith("/rcfile"))
     .at(-1)?.content || "";
   const models = [
-    ["gpt-5.6-sol", 256000, 204800],
-    ["gpt-5.6-luna", 256000, 204800],
-    ["gpt-5.6-terra", 256000, 204800],
+    ["gpt-5.6-sol", 1050000, 840000],
+    ["gpt-5.6-luna", 1050000, 840000],
+    ["gpt-5.6-terra", 1050000, 840000],
     ["deepseek-v4-pro", 1000000, 800000],
-    ["deepseek-v4-flash", 1048560, 838000],
-    ["grok-4.5", 500000, 400000],
-    ["grok-4.6", 500000, 400000],
-    ["daybreak-blue-latest", 256000, 204800],
+    ["deepseek-v4-flash", 1000000, 800000],
+    ["grok-4.5", 1000000, 800000],
+    ["grok-4.6", 1000000, 800000],
     ["claude-opus-4-8", 1000000, 800000],
     ["claude-sonnet-5", 1000000, 800000],
     ["claude-opus-5", 1000000, 800000],
@@ -985,7 +984,8 @@ test("generated rcfile catalogs Claude chat models with exact safe context caps"
     assert.match(bashrc, new RegExp(`${id.replace(".", "\\.")}\\) __context=${context}; __compact=${compact}`));
     assert.ok(bashrc.includes(`${id}\t${context}\t${compact}`));
   }
-  assert.match(bashrc, /CLAUDE_CODE_MAX_CONTEXT_TOKENS=\$__context CLAUDE_CODE_AUTO_COMPACT_WINDOW=\$__compact __reaper_claude --model "\$__model" "\$@"/);
+  assert.match(bashrc, /CLAUDE_CODE_MAX_CONTEXT_TOKENS=\$__context CLAUDE_CODE_AUTO_COMPACT_WINDOW=\$__compact __reaper_claude --model "\$\{__claude_id:-\$__model\}" "\$@"/);
+  assert.match(bashrc, /IS_SANDBOX=1 CLAUDE_CODE_MAX_CONTEXT_TOKENS=\$\{CLAUDE_CODE_MAX_CONTEXT_TOKENS:-\$__context\} CLAUDE_CODE_AUTO_COMPACT_WINDOW=\$\{CLAUDE_CODE_AUTO_COMPACT_WINDOW:-\$__compact\} command claude "\$@"/);
   assert.doesNotMatch(bashrc, /export CLAUDE_CODE_MAX_CONTEXT_TOKENS=/);
   assert.deepEqual({ ...(await shell.getProjectEnv("claude-model-catalog")) }, {});
 });
@@ -996,11 +996,11 @@ test("Claude model launcher rejects unknown and image-only IDs and launches norm
   const bashrc = fake.installed
     .filter((item) => item.project === "claude-model-validation" && item.target.endsWith("/rcfile"))
     .at(-1)?.content || "";
-  assert.match(bashrc, /gpt-image-1\.5\|gpt-image-2\|grok-imagine-image\|grok-imagine-image-quality\) printf 'Reaper: %s is image-only and cannot be used for Claude chat/);
+  assert.match(bashrc, /gpt-image-1\.5\|gpt-image-2\|grok-imagine-image\|grok-imagine-image-quality\|grok-imagine-video\|grok-imagine-video-1\.5-preview\) printf 'Reaper: %s is image-only and cannot be used for Claude chat/);
   assert.match(bashrc, /\*\) printf 'Reaper: unknown Claude chat model: %s\. Run reaper-claude-models to list IDs\./);
   assert.match(bashrc, /REAPER_CLAUDE_MODEL=\$__model/);
   assert.match(bashrc, /__reaper_mark claude/);
-  assert.match(bashrc, /__reaper_claude --model "\$__model" "\$@"/);
+  assert.match(bashrc, /__reaper_claude --model "\$\{__claude_id:-\$__model\}" "\$@"/);
 });
 
 test("Claude model resume permits same or larger targets and fails closed before smaller switches", async () => {
@@ -1009,12 +1009,15 @@ test("Claude model resume permits same or larger targets and fails closed before
   const bashrc = fake.installed
     .filter((item) => item.project === "claude-model-resume" && item.target.endsWith("/rcfile"))
     .at(-1)?.content || "";
-  assert.match(bashrc, /--continue\|--resume\) __resume=1/);
+  assert.match(bashrc, /--continue\|--resume\|--resume=\*\) __resume=1/);
   assert.match(bashrc, /case "\$\{REAPER_CLAUDE_MODEL-\}" in/);
-  assert.match(bashrc, /\[ -n "\$__current_context" \] \|\| __current_context=1048560/);
+  assert.match(bashrc, /for __store in "\$\{CLAUDE_CONFIG_DIR:-\/work\/\.reaper\/claude\}" \/root\/\.claude; do/);
+  assert.match(bashrc, /CLAUDE_CONFIG_DIR=\$\{__reaper_resume_config:-\$\{CLAUDE_CONFIG_DIR:-\/work\/\.reaper\/claude\}\}/);
+  assert.equal((bashrc.match(/__reaper_prepare_claude_resume "\$@"/g) || []).length, 2);
+  assert.match(bashrc, /\[ -n "\$__current_context" \] \|\| __current_context=2000000/);
   assert.match(bashrc, /if \[ "\$__context" -lt "\$__current_context" \]; then/);
   const refusal = bashrc.indexOf("refusing unsafe resume");
-  const launch = bashrc.indexOf('__reaper_claude --model "$__model"');
+  const launch = bashrc.indexOf('__reaper_claude --model "${__claude_id:-$__model}"');
   assert.ok(refusal > -1 && launch > refusal, "smaller resume refusal must precede launch");
   assert.match(bashrc, /Claude Code 2\.1\.212 cannot be proven to compact and resume noninteractively before switching/);
   assert.match(bashrc, /run \/compact in Claude; exit Claude; then run reaper-claude-model %s --continue/);
