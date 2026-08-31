@@ -1401,6 +1401,34 @@ function publicationKey(config, port) {
   return config.mode === "ip" ? port.containerPort : port.subdomain;
 }
 
+async function suggestAvailablePort(project, nearPort) {
+  const config = publicationConfig();
+  const start = Number.isInteger(nearPort) && nearPort >= 1 && nearPort <= 65535 ? nearPort : 0;
+  if (config.mode !== "ip") {
+    const own = new Set((await getProjectPorts(project)).ports.map((entry) => entry.containerPort));
+    let candidate = start + 1 > 65535 ? 1 : start + 1;
+    while (own.has(candidate)) candidate = candidate >= 65535 ? 1 : candidate + 1;
+    return candidate;
+  }
+  const projects = (await fs.readdir(PROJECTS_ROOT, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => entry.name);
+  const used = new Set();
+  for (const name of projects) {
+    const { ports } = await getProjectPorts(name);
+    for (const entry of ports) used.add(entry.containerPort);
+  }
+  const isFree = (candidate) => candidate >= IP_PUBLISH_MIN_PORT
+    && !IP_PUBLISH_RESERVED_PORTS.has(candidate) && !used.has(candidate);
+  for (let candidate = Math.max(IP_PUBLISH_MIN_PORT, start + 1); candidate <= 65535; candidate += 1) {
+    if (isFree(candidate)) return candidate;
+  }
+  for (let candidate = IP_PUBLISH_MIN_PORT; candidate <= 65535; candidate += 1) {
+    if (isFree(candidate)) return candidate;
+  }
+  throw new Error("no free host ports are available");
+}
+
 async function assertPublishedRoutesAvailable(project, ports) {
   if (!ports.length) return;
   const config = publicationConfig();
@@ -1413,10 +1441,11 @@ async function assertPublishedRoutesAvailable(project, ports) {
     const { ports: existing } = await getProjectPorts(otherProject);
     const conflict = existing.find((port) => requested.has(publicationKey(config, port)));
     if (!conflict) continue;
+    const suggestion = await suggestAvailablePort(project, conflict.containerPort);
     if (config.mode === "ip") {
-      throw new Error(`host port ${conflict.containerPort} is already published by project "${otherProject}"`);
+      throw new Error(`host port ${conflict.containerPort} is already published by project "${otherProject}"; try port ${suggestion}`);
     }
-    throw new Error(`subdomain "${conflict.subdomain}" is already published by project "${otherProject}"`);
+    throw new Error(`subdomain "${conflict.subdomain}" is already published by project "${otherProject}"; try port ${suggestion}`);
   }
 }
 
@@ -1554,8 +1583,14 @@ async function publishProjectPort(project, containerPort, { subdomain, public: i
     : String(subdomain).trim().toLowerCase();
   return serializeManifest(project, async () => {
     const current = await getProjectPorts(project);
-    const next = current.ports.filter((entry) => entry.containerPort !== port);
-    next.push({ containerPort: port, subdomain: label, requireReaperAuth: !isPublic });
+    const existing = current.ports.find((entry) => entry.containerPort === port);
+    if (existing) {
+      const config = publicationConfig();
+      const url = publishedPortUrl(config, existing);
+      const suggestion = await suggestAvailablePort(project, port);
+      throw new Error(`port ${port} is already published at ${url}; unpublish it first or try port ${suggestion}`);
+    }
+    const next = [...current.ports, { containerPort: port, subdomain: label, requireReaperAuth: !isPublic }];
     await updateProjectPortsUnlocked(project, validatePorts(next), undefined);
     return listProjectPortsWithUrls(project);
   });

@@ -972,11 +972,10 @@ test("pod publication capability is project-bound and self mutations are additiv
   }]);
   result = await shell.publishProjectPort("self-publish", 8080, { subdomain: "self-web", public: true });
   assert.equal(result.ports.length, 2);
-  result = await shell.publishProjectPort("self-publish", 3000, { subdomain: "self-updated" });
-  assert.deepEqual(result.ports.map(({ containerPort, subdomain }) => ({ containerPort, subdomain })), [
-    { containerPort: 3000, subdomain: "self-updated" },
-    { containerPort: 8080, subdomain: "self-web" }
-  ]);
+  await assert.rejects(
+    () => shell.publishProjectPort("self-publish", 3000, { subdomain: "self-updated" }),
+    /port 3000 is already published at https:\/\/self-publish-fd63d965-3000\.example\.test; unpublish it first or try port 3001/
+  );
   result = await shell.unpublishProjectPort("self-publish", 8080);
   assert.deepEqual(result.ports.map(({ containerPort }) => containerPort), [3000]);
 
@@ -1056,7 +1055,7 @@ test("IP publishing binds the container port on the Reaper host", async () => {
     await createProject("ip-port-conflict");
     await assert.rejects(
       () => shell.updateProjectPorts("ip-port-conflict", [{ containerPort: 5173, subdomain: "other" }]),
-      /host port 5173 is already published by project "ip-ports-project"/
+      /host port 5173 is already published by project "ip-ports-project"; try port 5174/
     );
   } finally {
     process.env.APEX_DOMAIN = "example.test";
