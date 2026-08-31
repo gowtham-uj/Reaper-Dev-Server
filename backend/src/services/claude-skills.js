@@ -18,15 +18,115 @@ const MAX_FILE_SIZE = 16 * 1024 * 1024;
 const MAX_TOTAL_SIZE = 128 * 1024 * 1024;
 const TAR_BLOCK = 512;
 
+const MANAGED_SKILL_NAME = "reaper-port-publishing";
+const MANAGED_SKILL_CONTENT = `---
+name: reaper-port-publishing
+description: Publish development servers from a Reaper project pod
+---
+
+# Reaper port publishing
+
+When you start a user-facing development server in a Reaper project pod:
+
+1. Bind the server to \`0.0.0.0\`, not only \`localhost\` or \`127.0.0.1\`.
+2. Verify the server locally inside the pod.
+3. Automatically run \`reaper-port publish <port>\`.
+4. Report the externally reachable URL printed by the command.
+
+Published routes are Reaper-auth protected by default. Use \`reaper-port publish <port> --public\` only when the user explicitly requests unauthenticated public access. Do not use \`--public\` merely because the user asks to share, preview, expose, or publish the server.
+
+Use \`reaper-port list\` to inspect this pod's published routes and \`reaper-port unpublish <port>\` to remove one. Never edit ports metadata and never call the admin ports API directly.
+
+Port publishing is available only in project pods that provide the \`reaper-port\` command and pod capability. If the command reports that IP-mode networking cannot publish a route, explain that restriction; do not speculate about IP-mode otherwise.
+`;
+
+function temporarySibling(target, label) {
+  return path.join(path.dirname(target), `.${path.basename(target)}-${label}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+}
+
+async function installManagedSkill(root) {
+  const target = path.join(root, MANAGED_SKILL_NAME);
+  const stage = temporarySibling(target, "stage");
+  const old = temporarySibling(target, "old");
+  await fs.mkdir(stage, { mode: 0o700 });
+  try {
+    await fs.writeFile(path.join(stage, "SKILL.md"), MANAGED_SKILL_CONTENT, { mode: 0o600 });
+    let replaced = false;
+    try {
+      await fs.rename(target, old);
+      replaced = true;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    try {
+      await fs.rename(stage, target);
+    } catch (error) {
+      if (replaced) await fs.rename(old, target);
+      throw error;
+    }
+    if (replaced) await fs.rm(old, { recursive: true, force: true });
+  } finally {
+    await fs.rm(stage, { recursive: true, force: true });
+    await fs.rm(old, { recursive: true, force: true });
+  }
+}
+
+async function enableManagedSkill(setupFile) {
+  let source;
+  let stat;
+  try {
+    [source, stat] = await Promise.all([fs.readFile(setupFile, "utf8"), fs.stat(setupFile)]);
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
+  let settings;
+  try {
+    settings = JSON.parse(source);
+  } catch {
+    console.warn(`Skipping Claude skill defaults: invalid JSON at ${setupFile}`);
+    return;
+  }
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    console.warn(`Skipping Claude skill defaults: expected a JSON object at ${setupFile}`);
+    return;
+  }
+  if (settings.skillOverrides !== undefined &&
+      (!settings.skillOverrides || typeof settings.skillOverrides !== "object" || Array.isArray(settings.skillOverrides))) {
+    console.warn(`Skipping Claude skill defaults: invalid skillOverrides at ${setupFile}`);
+    return;
+  }
+  if (settings.skillOverrides?.[MANAGED_SKILL_NAME] === "on") return;
+  settings.skillOverrides ??= {};
+  settings.skillOverrides[MANAGED_SKILL_NAME] = "on";
+  const stage = temporarySibling(setupFile, "stage");
+  await fs.writeFile(stage, `${JSON.stringify(settings, null, 2)}\n`, { mode: stat.mode & 0o777 });
+  try {
+    await fs.rename(setupFile, `${stage}.old`);
+    try {
+      await fs.rename(stage, setupFile);
+    } catch (error) {
+      await fs.rename(`${stage}.old`, setupFile);
+      throw error;
+    }
+    await fs.rm(`${stage}.old`, { force: true });
+  } finally {
+    await fs.rm(stage, { force: true });
+    await fs.rm(`${stage}.old`, { force: true });
+  }
+}
+
 function safeName(name) {
   return name && name !== "." && name !== ".." && !name.includes("/") && !name.includes("\\") && !name.includes("\0");
 }
 
-export async function initClaudeSkillsStore() {
-  await fs.mkdir(CLAUDE_SKILLS_DIR, { recursive: true, mode: 0o700 });
-  const stat = await fs.lstat(CLAUDE_SKILLS_DIR);
+export async function initClaudeSkillsStore(root = CLAUDE_SKILLS_DIR, setupFile = CLAUDE_SETUP_FILE) {
+  await fs.mkdir(root, { recursive: true, mode: 0o700 });
+  const stat = await fs.lstat(root);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Claude skills store must be a regular directory");
-  return CLAUDE_SKILLS_DIR;
+  await installManagedSkill(root);
+  await enableManagedSkill(setupFile);
+  return root;
 }
 
 export async function validateClaudeSkillsStore(root = CLAUDE_SKILLS_DIR) {

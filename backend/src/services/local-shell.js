@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 import { isIP } from "node:net";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import * as defaultPodRuntime from "./pod-runtime.js";
 import {
   CLAUDE_CONFIG_DIR,
@@ -508,13 +508,129 @@ async function atomicText(file, content, mode = 0o600) {
   }
 }
 
-async function installPodText(project, target, content) {
+async function installPodText(project, target, content, mode = 0o600) {
+  if (mode !== 0o600 && mode !== 0o755) throw new Error("pod file mode must be 0600 or 0755");
   const installed = await podRuntime.podExec(project, [
     "sh", "-c",
-    'set -eu; target=$1; directory=${target%/*}; mkdir -p -- "$directory"; chmod 700 "$directory"; temporary="${target}.tmp.$$"; trap \'rm -f -- "$temporary"\' EXIT; cat > "$temporary"; chmod 600 "$temporary"; mv -f -- "$temporary" "$target"; trap - EXIT',
-    "reaper-install", target
+    'set -eu; target=$1; mode=$2; directory=${target%/*}; mkdir -p -- "$directory"; chmod 700 "$directory"; temporary="${target}.tmp.$$"; trap \'rm -f -- "$temporary"\' EXIT; cat > "$temporary"; chmod "$mode" "$temporary"; mv -f -- "$temporary" "$target"; trap - EXIT',
+    "reaper-install", target, mode.toString(8).padStart(4, "0")
   ], { input: content });
   if (installed.code !== 0) throw new Error(installed.stderr || `failed to install ${target}`);
+}
+
+const POD_PUBLICATION_FILE = "pod-publication.json";
+const POD_PUBLICATION_TOKEN = "/reaper/port-publication.token";
+const POD_PUBLICATION_CONFIG = "/reaper/port-publication.json";
+const POD_PUBLICATION_COMMAND = "/usr/local/bin/reaper-port";
+
+const REAPER_PORT_HELPER = `#!/usr/bin/env python3
+import argparse, json, sys, urllib.error, urllib.request
+
+def fail(message):
+    print("reaper-port: " + message, file=sys.stderr)
+    raise SystemExit(1)
+
+def main():
+    parser = argparse.ArgumentParser(prog="reaper-port")
+    sub = parser.add_subparsers(dest="action", required=True)
+    publish = sub.add_parser("publish")
+    publish.add_argument("port", type=int)
+    publish.add_argument("--subdomain")
+    publish.add_argument("--public", action="store_true")
+    publish.add_argument("--json", action="store_true")
+    listing = sub.add_parser("list")
+    listing.add_argument("--json", action="store_true")
+    unpublish = sub.add_parser("unpublish")
+    unpublish.add_argument("port", type=int)
+    unpublish.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+    try:
+        with open("${POD_PUBLICATION_CONFIG}", encoding="utf-8") as handle:
+            config = json.load(handle)
+        with open("${POD_PUBLICATION_TOKEN}", encoding="utf-8") as handle:
+            token = handle.read().strip()
+        endpoint = config["endpoint"]
+        if not isinstance(endpoint, str) or not endpoint.startswith("http"):
+            raise ValueError("invalid endpoint")
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+        fail("cannot read publication configuration: " + str(error))
+    payload = {"action": args.action}
+    if args.action != "list":
+        payload["port"] = args.port
+    if args.action == "publish":
+        if args.subdomain is not None:
+            payload["subdomain"] = args.subdomain
+        payload["public"] = args.public
+    request = urllib.request.Request(endpoint, data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            result = json.load(response)
+    except urllib.error.HTTPError as error:
+        try:
+            detail = json.load(error).get("error", error.reason)
+        except Exception:
+            detail = error.reason
+        fail("server returned HTTP %s: %s" % (error.code, detail))
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
+        fail("request failed: " + str(error))
+    if args.json:
+        print(json.dumps(result, separators=(",", ":")))
+        return
+    routes = result.get("ports", [])
+    if args.action == "unpublish":
+        print("Unpublished port %d." % args.port)
+    elif not routes:
+        print("No published ports.")
+    else:
+        for route in routes:
+            print("%d -> %s (%s)" % (route["containerPort"], route["url"],
+                "protected" if route.get("requireReaperAuth", True) else "public"))
+
+if __name__ == "__main__":
+    main()
+`;
+
+async function ensurePodPublicationCapability(project) {
+  await ensureTrustedProjectState(project);
+  const credentialPath = path.join(reaperRoot(project), POD_PUBLICATION_FILE);
+  let credential;
+  try {
+    credential = JSON.parse(await fs.readFile(credentialPath, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const info = await podRuntime.podInspect(project);
+  if (!info?.running || typeof info.generation !== "string" || !info.generation) {
+    throw new Error("project pod has no stable container generation");
+  }
+  if (!credential || typeof credential.token !== "string" || !/^rpp_[0-9a-f]{64}$/.test(credential.token)
+      || credential.generation !== info.generation) {
+    credential = { token: `rpp_${randomBytes(32).toString("hex")}`, generation: info.generation };
+    await atomicJson(credentialPath, credential);
+  }
+  const config = publicationConfig();
+  const publicOrigin = `https://${config.mode === "ip" ? config.caddyHost : config.host}`;
+  const endpoint = `${publicOrigin}/api/projects/${encodeURIComponent(project)}/ports/self`;
+  await installPodText(project, POD_PUBLICATION_TOKEN, `${credential.token}\n`, 0o600);
+  await installPodText(project, POD_PUBLICATION_CONFIG, `${JSON.stringify({ endpoint })}\n`, 0o600);
+  await installPodText(project, POD_PUBLICATION_COMMAND, REAPER_PORT_HELPER, 0o755);
+}
+
+async function verifyPodPublicationCapability(project, candidate) {
+  assertProject(project);
+  if (typeof candidate !== "string" || !/^rpp_[0-9a-f]{64}$/.test(candidate)) return false;
+  try {
+    const [credential, info] = await Promise.all([
+      fs.readFile(path.join(reaperRoot(project), POD_PUBLICATION_FILE), "utf8").then(JSON.parse),
+      podRuntime.podInspect(project)
+    ]);
+    if (!info?.running || typeof credential?.token !== "string" || !/^rpp_[0-9a-f]{64}$/.test(credential.token)
+        || typeof credential.generation !== "string" || credential.generation !== info.generation) return false;
+    return timingSafeEqual(Buffer.from(candidate), Buffer.from(credential.token));
+  } catch {
+    return false;
+  }
 }
 
 async function ensureShellRecoveryFiles(project, name, shellConfig = {}) {
@@ -684,20 +800,78 @@ async function syncPodManifest(project, entries, { podReady = false } = {}) {
   await installPodText(project, "/work/.reaper/sessions.json", `${JSON.stringify(entries, null, 2)}\n`);
 }
 
-// Canonical Claude setup (settings.json) lives in the cloud_proxy pod; every
-// Claude pod gets an exact copy so the model picker, permissions, and env stay
-// consistent. Runs on every session prepare + on store updates (file watcher).
+// Canonical Claude setup lives in the cloud_proxy pod. Keep both Claude config
+// locations in sync and derive only the model-picker cache fields from it.
+const CLAUDE_SETTINGS_TARGETS = [`${CLAUDE_CONFIG_DIR}/settings.json`, "/root/.claude/settings.json"];
+const CLAUDE_STATE_TARGETS = [`${CLAUDE_CONFIG_DIR}/.claude.json`, "/root/.claude.json"];
+const MAX_CLAUDE_MODELS = 256;
+const MAX_CLAUDE_MODEL_ID_LENGTH = 512;
+
+function claudeModelCaches(settings) {
+  const models = settings?.availableModels;
+  if (!Array.isArray(models) || models.length === 0 || models.length > MAX_CLAUDE_MODELS
+      || models.some((model) => typeof model !== "string" || model.trim().length === 0
+        || model.length > MAX_CLAUDE_MODEL_ID_LENGTH)
+      || new Set(models).size !== models.length) {
+    throw new Error("availableModels must contain unique nonempty model IDs");
+  }
+  return {
+    modelAccessCache: [...models],
+    additionalModelOptionsCache: models.map((model) => ({
+      value: model,
+      label: model,
+      description: model
+    }))
+  };
+}
+
+function sameJsonValue(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+async function syncClaudeStateFile(project, target, caches) {
+  const current = await readLegacyPodFile(project, target, 2 * 1024 * 1024);
+  let state = {};
+  if (current !== null && current.trim()) {
+    try {
+      state = JSON.parse(current);
+      if (!state || typeof state !== "object" || Array.isArray(state)) throw new Error("expected an object");
+    } catch (error) {
+      console.error(`[reaper] Claude state ${target} in pod ${project} is malformed; preserving it and skipping cache sync: ${error.message}`);
+      return;
+    }
+  }
+  if (sameJsonValue(state.modelAccessCache, caches.modelAccessCache)
+      && sameJsonValue(state.additionalModelOptionsCache, caches.additionalModelOptionsCache)) return;
+  const merged = { ...state, ...caches };
+  await installPodText(project, target, `${JSON.stringify(merged, null, 2)}\n`, 0o600);
+}
+
 async function syncClaudeSetupToPod(project) {
   try {
     if (!fss.existsSync(CLAUDE_SETUP_FILE)) return;
     const canonical = await fs.readFile(CLAUDE_SETUP_FILE, "utf8");
     if (!canonical.trim()) return;
-    try { JSON.parse(canonical); } catch { console.error("[reaper] Claude setup store is not valid JSON; skipping sync"); return; }
-    const current = await readLegacyPodFile(project, `${CLAUDE_CONFIG_DIR}/settings.json`, 2 * 1024 * 1024);
-    if (current === null || current.trim() !== canonical.trim()) {
-      await installPodText(project, `${CLAUDE_CONFIG_DIR}/settings.json`, canonical);
-      console.log(`[reaper] synced Claude setup to pod ${project}`);
+    let settings;
+    try {
+      settings = JSON.parse(canonical);
+    } catch {
+      console.error("[reaper] Claude setup store is not valid JSON; skipping sync");
+      return;
     }
+    let caches;
+    try {
+      caches = claudeModelCaches(settings);
+    } catch (error) {
+      console.error(`[reaper] Claude setup store has invalid availableModels; skipping sync: ${error.message}`);
+      return;
+    }
+    for (const target of CLAUDE_SETTINGS_TARGETS) {
+      const current = await readLegacyPodFile(project, target, 2 * 1024 * 1024);
+      if (current !== canonical) await installPodText(project, target, canonical, 0o600);
+    }
+    for (const target of CLAUDE_STATE_TARGETS) await syncClaudeStateFile(project, target, caches);
+    console.log(`[reaper] synced Claude setup bundle to pod ${project}`);
   } catch (error) {
     console.error(`[reaper] failed to sync Claude setup to ${project}:`, error.message);
   }
@@ -715,6 +889,7 @@ async function preparePodSessions(project, sessions, entries = sessions, { podRe
   if (!podReady) await podRuntime.ensurePod(project, projectRoot(project));
   await syncClaudeSkillsToPod(project, podRuntime.podExec);
   await syncClaudeSetupToPod(project);
+  await ensurePodPublicationCapability(project);
   if (!sessions.length) {
     await syncPodManifest(project, entries, { podReady: true });
     return;
@@ -1195,6 +1370,26 @@ function publicationConfig() {
   throw new Error("REAPER_HOST or APEX_DOMAIN must be a valid DNS domain or IP address for published ports");
 }
 
+function publishedPortUrl(config, port) {
+  return config.mode === "ip"
+    ? `https://${config.caddyHost}:${port.containerPort}`
+    : `https://${port.subdomain}.${config.host}`;
+}
+
+async function listProjectPortsWithUrls(project) {
+  const current = await getProjectPorts(project);
+  if (!current.ports.length) return { ports: [], requireReaperAuth: current.requireReaperAuth };
+  const config = publicationConfig();
+  return {
+    ports: current.ports.map((port) => ({
+      ...port,
+      requireReaperAuth: port.requireReaperAuth ?? current.requireReaperAuth,
+      url: publishedPortUrl(config, port)
+    })),
+    requireReaperAuth: current.requireReaperAuth
+  };
+}
+
 function assertPublicationPortAllowed(config, port) {
   if (config.mode !== "ip") return;
   if (port.containerPort < IP_PUBLISH_MIN_PORT || IP_PUBLISH_RESERVED_PORTS.has(port.containerPort)) {
@@ -1339,6 +1534,41 @@ async function updateProjectPorts(project, ports, requireReaperAuth) {
   return serializeManifest(project, () => {
     assertProject(project);
     return updateProjectPortsUnlocked(project, clean, requireReaperAuth);
+  });
+}
+function defaultPublishedSubdomain(project, port) {
+  const slug = project.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "") || "pod";
+  const digest = createHash("sha256").update(project, "utf8").digest("hex").slice(0, 8);
+  const suffix = `-${digest}-${port}`;
+  return `${slug.slice(0, 63 - suffix.length).replace(/-+$/g, "") || "pod"}${suffix}`;
+}
+
+
+async function publishProjectPort(project, containerPort, { subdomain, public: isPublic = false } = {}) {
+  assertProject(project);
+  const port = Number(containerPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("containerPort must be an integer from 1 to 65535");
+  if (typeof isPublic !== "boolean") throw new Error("public must be a boolean");
+  const label = subdomain === undefined
+    ? defaultPublishedSubdomain(project, port)
+    : String(subdomain).trim().toLowerCase();
+  return serializeManifest(project, async () => {
+    const current = await getProjectPorts(project);
+    const next = current.ports.filter((entry) => entry.containerPort !== port);
+    next.push({ containerPort: port, subdomain: label, requireReaperAuth: !isPublic });
+    await updateProjectPortsUnlocked(project, validatePorts(next), undefined);
+    return listProjectPortsWithUrls(project);
+  });
+}
+
+async function unpublishProjectPort(project, containerPort) {
+  assertProject(project);
+  const port = Number(containerPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("containerPort must be an integer from 1 to 65535");
+  return serializeManifest(project, async () => {
+    const current = await getProjectPorts(project);
+    await updateProjectPortsUnlocked(project, current.ports.filter((entry) => entry.containerPort !== port), undefined);
+    return listProjectPortsWithUrls(project);
   });
 }
 
@@ -2507,6 +2737,10 @@ export {
   stripTerminalQueries,
   getProjectPorts,
   updateProjectPorts,
+  listProjectPortsWithUrls,
+  publishProjectPort,
+  unpublishProjectPort,
+  verifyPodPublicationCapability,
   destroyProjectRuntime,
   validatePorts,
   regenerateCaddyPorts,
@@ -2514,6 +2748,7 @@ export {
   setGlobalEnvProvider,
   refreshGlobalEnvironment,
   __setPodRuntimeForTests,
+  syncClaudeSetupToPod,
   __createSubprocessSessionForTests,
   SESSION_ARCHIVE_DIR as SESSION_ARCHIVE_PATH
 };

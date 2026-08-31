@@ -82,7 +82,8 @@ function makeFakeRuntime() {
     async podExec(project, argv, options = {}) {
       calls.push({ project, argv: [...argv], options: { ...options } });
       if (argv[0] === "sh" && argv[3] === "reaper-install") {
-        installed.push({ project, target: argv[4], content: options.input });
+        installed.push({ project, target: argv[4], content: options.input, mode: argv[5] });
+        legacyFiles.set(`${project}:${argv[4]}`, options.input);
       }
       if (argv[0] === "timeout" && argv[2] === "cat") {
         const key = `${project}:${argv.at(-1)}`;
@@ -245,6 +246,83 @@ const fake = makeFakeRuntime();
 shell.__setPodRuntimeForTests(fake);
 await shell.selectBackend();
 
+
+test("Claude setup sync installs both settings and derives caches without replacing state", async () => {
+  const project = "claude-existing";
+  const models = ["custom/sonnet", "custom/opus"];
+  const canonical = `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://proxy.test" }, availableModels: models }, null, 2)}\n`;
+  await fs.mkdir(path.join(stateRoot, "claude-setup"), { recursive: true });
+  await fs.writeFile(path.join(stateRoot, "claude-setup", "settings.json"), canonical);
+  fake.setLegacyFile(project, "/work/.reaper/claude/.claude.json", JSON.stringify({
+    machineID: "pod-machine",
+    projects: { "/work": { trusted: true } },
+    modelAccessCache: ["old"]
+  }));
+  fake.setLegacyFile(project, "/root/.claude.json", JSON.stringify({
+    hasCompletedOnboarding: true,
+    experiments: { retained: "yes" }
+  }));
+
+  const before = fake.installed.length;
+  await shell.syncClaudeSetupToPod(project);
+  const writes = fake.installed.slice(before).filter((entry) => entry.project === project);
+  assert.deepEqual(
+    writes.filter((entry) => entry.target.endsWith("settings.json")).map((entry) => entry.target),
+    ["/work/.reaper/claude/settings.json", "/root/.claude/settings.json"]
+  );
+  assert.ok(writes.filter((entry) => entry.target.endsWith("settings.json")).every((entry) =>
+    entry.content === canonical && entry.mode === "0600"));
+
+  const workState = JSON.parse(writes.find((entry) => entry.target === "/work/.reaper/claude/.claude.json").content);
+  assert.equal(workState.machineID, "pod-machine");
+  assert.deepEqual(workState.projects, { "/work": { trusted: true } });
+  assert.deepEqual(workState.modelAccessCache, models);
+  assert.deepEqual(workState.additionalModelOptionsCache, models.map((model) => ({
+    value: model, label: model, description: model
+  })));
+  const rootState = JSON.parse(writes.find((entry) => entry.target === "/root/.claude.json").content);
+  assert.equal(rootState.hasCompletedOnboarding, true);
+  assert.deepEqual(rootState.experiments, { retained: "yes" });
+  assert.deepEqual(rootState.modelAccessCache, models);
+});
+
+test("Claude setup sync initializes missing caches and is idempotent", async () => {
+  const project = "claude-fresh";
+  const models = ["picker/a"];
+  const canonical = `${JSON.stringify({ availableModels: models })}\n`;
+  await fs.mkdir(path.join(stateRoot, "claude-setup"), { recursive: true });
+  await fs.writeFile(path.join(stateRoot, "claude-setup", "settings.json"), canonical);
+
+  const before = fake.installed.length;
+  await shell.syncClaudeSetupToPod(project);
+  const firstWrites = fake.installed.slice(before).filter((entry) => entry.project === project);
+  assert.deepEqual(firstWrites.map((entry) => entry.target), [
+    "/work/.reaper/claude/settings.json",
+    "/root/.claude/settings.json",
+    "/work/.reaper/claude/.claude.json",
+    "/root/.claude.json"
+  ]);
+  assert.ok(firstWrites.every((entry) => entry.mode === "0600"));
+
+  const afterFirst = fake.installed.length;
+  await shell.syncClaudeSetupToPod(project);
+  assert.equal(fake.installed.length, afterFirst);
+});
+
+test("Claude setup sync preserves malformed cache files and continues other targets", async () => {
+  const project = "claude-malformed";
+  const canonical = `${JSON.stringify({ availableModels: ["picker/safe"] })}\n`;
+  await fs.mkdir(path.join(stateRoot, "claude-setup"), { recursive: true });
+  await fs.writeFile(path.join(stateRoot, "claude-setup", "settings.json"), canonical);
+  fake.setLegacyFile(project, "/work/.reaper/claude/.claude.json", "{not-json");
+
+  const before = fake.installed.length;
+  await shell.syncClaudeSetupToPod(project);
+  const writes = fake.installed.slice(before).filter((entry) => entry.project === project);
+  assert.equal(writes.some((entry) => entry.target === "/work/.reaper/claude/.claude.json"), false);
+  assert.equal(writes.some((entry) => entry.target === "/root/.claude.json"), true);
+  assert.equal(writes.filter((entry) => entry.target.endsWith("settings.json")).length, 2);
+});
 async function createProject(name) {
   await fs.mkdir(path.join(root, name), { recursive: true });
 }
@@ -366,6 +444,36 @@ test("manifest supports N persistent sessions across manager operations", async 
   assert.ok(fake.calls.some((call) => call.argv.includes("REAPER_SESSION_ID=worker")));
   assert.ok(fake.calls.some((call) => call.argv[3] === "reaper-prepare-session" && call.argv[9].endsWith(" 'worker'")));
   assert.deepEqual((await shell.listSessions({ path: "alpha" })).map((item) => item.name), ["main", "bot"]);
+});
+
+test("pod preparation installs a stable executable self-publisher with a public Reaper endpoint", async () => {
+  await createProject("publisher-install");
+  const before = fake.installed.length;
+  await shell.openProjectShell({ path: "publisher-install", sessionName: "main" });
+  const first = fake.installed.slice(before).filter((entry) => entry.project === "publisher-install");
+  const token = first.find((entry) => entry.target === "/reaper/port-publication.token");
+  const config = first.find((entry) => entry.target === "/reaper/port-publication.json");
+  const command = first.find((entry) => entry.target === "/usr/local/bin/reaper-port");
+  assert.match(token.content, /^rpp_[0-9a-f]{64}\n$/);
+  assert.equal(token.mode, "0600");
+  assert.deepEqual(JSON.parse(config.content), {
+    endpoint: "https://example.test/api/projects/publisher-install/ports/self"
+  });
+  assert.equal(config.mode, "0600");
+  assert.match(command.content, /^#!\/usr\/bin\/env python3\n/);
+  assert.equal(command.mode, "0755");
+  const trusted = JSON.parse(await fs.readFile(
+    path.join(stateRoot, "projects", "publisher-install", "pod-publication.json"),
+    "utf8"
+  ));
+  assert.equal(`${trusted.token}\n`, token.content);
+  assert.equal(trusted.generation, "pod-publisher-install-id");
+
+  const secondStart = fake.installed.length;
+  await shell.openProjectShell({ path: "publisher-install", sessionName: "worker" });
+  const secondToken = fake.installed.slice(secondStart)
+    .find((entry) => entry.project === "publisher-install" && entry.target === "/reaper/port-publication.token");
+  assert.equal(secondToken.content, token.content);
 });
 
 test("legacy pod metadata migrates into trusted backend state without losing named sessions", async () => {
@@ -838,6 +946,42 @@ test("published ports validate input and put HTTP and WebSocket traffic through 
     assert.doesNotMatch(block.slice(proxyIndex), /\theader_up -(?:Connection|Upgrade)/);
   }
   assert.equal(fake.reloads, reloadsBefore + 1);
+});
+
+test("pod publication capability is project-bound and self mutations are additive", async () => {
+  await createProject("self-publish");
+  await createProject("other-publish");
+  const token = `rpp_${"a".repeat(64)}`;
+  const otherToken = `rpp_${"b".repeat(64)}`;
+  await fs.mkdir(path.join(stateRoot, "projects", "self-publish"), { recursive: true });
+  await fs.mkdir(path.join(stateRoot, "projects", "other-publish"), { recursive: true });
+  await fs.writeFile(path.join(stateRoot, "projects", "self-publish", "pod-publication.json"),
+    `${JSON.stringify({ token, generation: "pod-self-publish-id" })}\n`);
+  await fs.writeFile(path.join(stateRoot, "projects", "other-publish", "pod-publication.json"),
+    `${JSON.stringify({ token: otherToken, generation: "pod-other-publish-id" })}\n`);
+  assert.equal(await shell.verifyPodPublicationCapability("self-publish", token), true);
+  assert.equal(await shell.verifyPodPublicationCapability("self-publish", otherToken), false);
+  assert.equal(await shell.verifyPodPublicationCapability("other-publish", token), false);
+
+  let result = await shell.publishProjectPort("self-publish", 3000);
+  assert.deepEqual(result.ports, [{
+    containerPort: 3000,
+    subdomain: "self-publish-fd63d965-3000",
+    requireReaperAuth: true,
+    url: "https://self-publish-fd63d965-3000.example.test"
+  }]);
+  result = await shell.publishProjectPort("self-publish", 8080, { subdomain: "self-web", public: true });
+  assert.equal(result.ports.length, 2);
+  result = await shell.publishProjectPort("self-publish", 3000, { subdomain: "self-updated" });
+  assert.deepEqual(result.ports.map(({ containerPort, subdomain }) => ({ containerPort, subdomain })), [
+    { containerPort: 3000, subdomain: "self-updated" },
+    { containerPort: 8080, subdomain: "self-web" }
+  ]);
+  result = await shell.unpublishProjectPort("self-publish", 8080);
+  assert.deepEqual(result.ports.map(({ containerPort }) => containerPort), [3000]);
+
+  await fs.writeFile(path.join(stateRoot, "projects", "self-publish", "pod-publication.json"), "{}\n");
+  assert.equal(await shell.verifyPodPublicationCapability("self-publish", token), false);
 });
 
 test("published ports preserve global and per-port auth opt-outs and remain ungated", async () => {

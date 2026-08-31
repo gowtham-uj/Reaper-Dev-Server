@@ -11,7 +11,7 @@ import { z } from "zod";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import yazl from "yazl";
-import { openProjectShell, listSessions, renameSession, destroySession, destroyProjectRuntime, setProjectEnv, getProjectEnv, getProjectBashrc, setProjectBashrc, resetProjectState, attachTerminalWebSocket, closeTerminalConnectionsForSession, initLocalShells, shutdownLocalShells, listArchivedSessionLogs, getProjectPorts, updateProjectPorts, validateShellEnvironment, setGlobalEnvProvider, refreshGlobalEnvironment, SESSION_ARCHIVE_PATH } from "./services/local-shell.js";
+import { openProjectShell, listSessions, renameSession, destroySession, destroyProjectRuntime, setProjectEnv, getProjectEnv, getProjectBashrc, setProjectBashrc, resetProjectState, attachTerminalWebSocket, closeTerminalConnectionsForSession, initLocalShells, shutdownLocalShells, listArchivedSessionLogs, getProjectPorts, updateProjectPorts, listProjectPortsWithUrls, publishProjectPort, unpublishProjectPort, verifyPodPublicationCapability, validateShellEnvironment, setGlobalEnvProvider, refreshGlobalEnvironment, SESSION_ARCHIVE_PATH } from "./services/local-shell.js";
 import { destroyPod, PROJECT_NAME_RE } from "./services/pod-runtime.js";
 import { ResumableUploadStore } from "./services/resumable-upload.js";
 
@@ -1473,6 +1473,44 @@ const ports = {
   put: async (req, body, params) => ({ status: 200, body: await updateProjectPorts(params.name, body?.ports, body?.requireReaperAuth) })
 };
 
+const selfPorts = {
+  post: async (req, body, params) => {
+    const authorization = String(req.headers.authorization || "");
+    const match = /^Bearer (rpp_[0-9a-f]{64})$/.exec(authorization);
+    if (!match || !await verifyPodPublicationCapability(params.name, match[1])) {
+      return { status: 401, body: { error: "invalid pod publication capability" } };
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body) || !["list", "publish", "unpublish"].includes(body.action)) {
+      return { status: 400, body: { error: "action must be list, publish, or unpublish" } };
+    }
+    try {
+      if (body.action === "list") return { status: 200, body: await listProjectPortsWithUrls(params.name) };
+      if (!Number.isInteger(body.port) || body.port < 1 || body.port > 65535) {
+        return { status: 400, body: { error: "port must be an integer from 1 to 65535" } };
+      }
+      if (body.action === "publish") {
+        if (body.subdomain !== undefined && typeof body.subdomain !== "string") {
+          return { status: 400, body: { error: "subdomain must be a string" } };
+        }
+        if (body.public !== undefined && typeof body.public !== "boolean") {
+          return { status: 400, body: { error: "public must be a boolean" } };
+        }
+        const result = await publishProjectPort(params.name, body.port, {
+          subdomain: body.subdomain,
+          public: body.public === true
+        });
+        await audit("ports.self.publish", req, { name: params.name, port: body.port, public: body.public === true });
+        return { status: 200, body: result };
+      }
+      const result = await unpublishProjectPort(params.name, body.port);
+      await audit("ports.self.unpublish", req, { name: params.name, port: body.port });
+      return { status: 200, body: result };
+    } catch (error) {
+      return { status: 400, body: { error: error.message } };
+    }
+  }
+};
+
 /* ---------- project session log archive ---------- */
 function resolveArchivedLog(scope, file) {
   if (!file || !/^[A-Za-z0-9._-]+\.log$/.test(file)) return null;
@@ -1549,6 +1587,7 @@ function serializeGlobalEnvUpdate(operation) {
       () => Promise.race([operation(), new Promise((_, reject) => setTimeout(() => reject(new Error("global env update timed out")), GLOBAL_ENV_UPDATE_TIMEOUT_MS))]),
       () => operation()
     );
+  return globalEnvUpdateOperation;
 }
 
 function startGlobalEnvRefresh() {
@@ -1990,6 +2029,7 @@ const routes = [
   ["DELETE", "/api/projects/:name/sessions/:s", true, sessions.destroy],
   ["GET",    "/api/projects/:name/ports", true, ports.get],
   ["PUT",    "/api/projects/:name/ports", true, ports.put],
+  ["POST",   "/api/projects/:name/ports/self", false, selfPorts.post],
   ["GET",    "/api/audit", true, async () => ({ status: 200, body: { audit: state.audit || [] } })],
   ["GET",    "/api/api-tokens", true, globalTokens.list],
   ["POST",   "/api/api-tokens", true, globalTokens.create],

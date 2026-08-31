@@ -126,6 +126,13 @@ test("project API tokens stay in trusted state and cannot forge global scope", a
       body: JSON.stringify({ name: "secureone", mode: "persistent" })
     });
     assert.equal(created.status, 201);
+    const missingPodCapability = await request("/api/projects/secureone/ports/self", {
+      method: "POST",
+      headers: { authorization: `Bearer rpp_${"c".repeat(64)}` },
+      body: JSON.stringify({ action: "list" })
+    });
+    assert.equal(missingPodCapability.status, 401);
+    assert.deepEqual(await missingPodCapability.json(), { error: "invalid pod publication capability" });
     for (const value of ["queued-one", "queued-two", "queued-final"]) {
       const update = await request("/api/global-env", {
         method: "PUT",
