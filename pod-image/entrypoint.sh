@@ -38,4 +38,20 @@ for name in "${session_names[@]}"; do
     "cat >> /reaper/logs/$name.log"
 done
 
-exec sleep infinity
+# Keep the container alive.
+#
+# This must not be a bare `sleep infinity`. That made the pod's liveness depend
+# on a process whose name is `sleep`, and sessions inside a pod routinely clean
+# up stray test sleeps with `pkill sleep` / `pkill -x sleep` / `pkill -f sleep`.
+# Any of those also matched this keepalive, so tini (PID 1) lost its only child,
+# exited, and Docker's `unless-stopped` policy restarted the container -- taking
+# every tmux session and any running Claude/opencode session down with it.
+#
+# `tail -f /dev/null` matches none of those commands, and the loop re-spawns the
+# keepalive if anything else kills it. Running it in the background and using
+# `wait` keeps SIGTERM handling prompt so `docker stop` still exits cleanly.
+trap 'exit 0' TERM INT
+while :; do
+  tail -f /dev/null &
+  wait $! || true
+done
