@@ -223,12 +223,17 @@ class FakeDocker {
       return { code: 0, stdout: args[1], stderr: "" };
     }
     if (args[0] === "stop") {
-      this.containers.get(args[1]).running = false;
-      return { code: 0, stdout: args[1], stderr: "" };
+      this.containers.get(args.at(-1)).running = false;
+      return { code: 0, stdout: args.at(-1), stderr: "" };
     }
     if (args[0] === "rm") {
-      this.containers.delete(args.at(-1));
-      return { code: 0, stdout: args.at(-1), stderr: "" };
+      const name = args.at(-1);
+      if (this.failNextRemove) {
+        this.failNextRemove = false;
+        return { code: 1, stdout: "", stderr: "removal of container is already in progress" };
+      }
+      this.containers.delete(name);
+      return { code: 0, stdout: name, stderr: "" };
     }
     if (args[0] === "exec") {
       return { code: 7, stdout: "captured stdout", stderr: "captured stderr" };
@@ -346,7 +351,7 @@ test("foreign or insecure private-network collisions fail closed", async () => {
 
 test("running owned pod is live-migrated and extra networks are disconnected without stop or rm", async () => {
   const fake = new FakeDocker();
-  fake.add("alpha", { running: true, capDrop: [], securityOpt: [] });
+  fake.add("alpha", { running: true, privileged: true });
   fake.containers.get(podName("alpha")).networks.set("shared-extra", "10.88.0.7");
   const context = await setup(fake);
 
@@ -359,8 +364,50 @@ test("running owned pod is live-migrated and extra networks are disconnected wit
   assert.ok(lifecycle.some((args) => args[0] === "network" && args[1] === "disconnect" && args[2] === "shared-extra"));
   assert.equal(fake.calls.some(({ args }) => ["start", "stop", "rm"].includes(args[0])), false);
   assert.deepEqual([...fake.containers.get(podName("alpha")).networks.keys()], [podNetworkName("alpha")]);
-  assert.equal(result.legacySecurity, true);
+  assert.equal(result.legacySecurity, false);
   assert.match(result.ip, /^172\.30\./);
+});
+
+test("legacy unhardened pod is recreated so it adopts the current security configuration", async () => {
+  const fake = new FakeDocker();
+  // Pods created before ddc385b are neither privileged nor hardened: they can
+  // run no namespace syscalls, and security flags cannot be changed in place.
+  fake.add("alpha", { running: true, capDrop: [], securityOpt: [] });
+  const context = await setup(fake);
+  const before = fake.containers.get(podName("alpha"));
+  assert.equal(before.privileged, false);
+
+  const result = await ensurePod("alpha", projectPath(context, "alpha"));
+
+  assert.equal(result.legacySecurity, false);
+  const runIndex = fake.calls.findIndex(({ args }) => args[0] === "run");
+  const stopIndex = fake.calls.findIndex(({ args }) => args[0] === "stop");
+  const removeIndex = fake.calls.findIndex(({ args }) => args[0] === "rm");
+  assert.ok(runIndex >= 0, "expected the legacy pod to be recreated");
+  // Stop first, then force-remove, then recreate -- removal must be verified
+  // before anything claims the name again.
+  assert.ok(stopIndex >= 0 && stopIndex < removeIndex, "expected the pod to be stopped before removal");
+  assert.ok(removeIndex < runIndex, "expected removal before recreation");
+  const runCall = fake.calls[runIndex];
+  assert.ok(runCall.args.includes("--privileged"));
+  const recreated = fake.containers.get(podName("alpha"));
+  assert.equal(recreated.privileged, true);
+  assert.deepEqual([...recreated.networks.keys()], [podNetworkName("alpha")]);
+  assert.equal(result.ip, recreated.networks.get(podNetworkName("alpha")));
+});
+
+test("a legacy upgrade that cannot remove the old container fails loudly instead of recreating", async () => {
+  const fake = new FakeDocker();
+  fake.add("alpha", { running: true, capDrop: [], securityOpt: [] });
+  fake.failNextRemove = true;
+  const context = await setup(fake);
+
+  await assert.rejects(
+    ensurePod("alpha", projectPath(context, "alpha")),
+    /docker rm -f .* failed: removal of container is already in progress/
+  );
+  // Never claim the name while the old container is still there.
+  assert.equal(fake.calls.some(({ args }) => args[0] === "run"), false);
 });
 
 test("stopped owned pod is attached and isolated before it is started", async () => {

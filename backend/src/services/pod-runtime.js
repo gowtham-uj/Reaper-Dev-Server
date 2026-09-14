@@ -18,6 +18,12 @@ const GIB = 1024 ** 3;
 const OUTPUT_LIMIT = 64 * 1024;
 const DOCKER_TIMEOUT_MS = 30_000;
 const MAX_DOCKER_TIMEOUT_MS = 5 * 60_000;
+// Recreating a pod tears the container down while it may still be running agent
+// work. ``docker rm -f`` alone has been observed to leave dockerd with a removal
+// that never completes, wedging the container name until the daemon restarts, so
+// the upgrade path stops the pod first and verifies the name is actually free.
+const POD_STOP_GRACE_SECONDS = 5;
+const POD_REMOVAL_TIMEOUT_MS = 60_000;
 const MAX_ACTIVE_DOCKER_COMMANDS = 8;
 const MAX_QUEUED_DOCKER_COMMANDS = 32;
 const DOCKER_QUEUE_TIMEOUT_MS = 10_000;
@@ -553,6 +559,52 @@ async function migrateNetworks(project, inspected) {
   return inspected;
 }
 
+// Project pods run user code that may build and run nested containers, so they
+// are created privileged (ddc385b). Security flags are immutable -- seccomp,
+// AppArmor, and the capability set are fixed when the container starts -- so a
+// pod that predates that change can only adopt it by being recreated.
+async function createPodContainer(project) {
+  await docker([
+    "run", "-d", "--name", podName(project), "--restart", "unless-stopped",
+    "--memory", POD_MEMORY_LIMIT, "--memory-swap", POD_MEMORY_SWAP,
+    "--cpus", POD_CPU_LIMIT, "--pids-limit", POD_PIDS_LIMIT,
+    "--privileged",
+    "--network", podNetworkName(project), "--hostname", podName(project).slice("reaper-pod-".length),
+    "-v", `${hostProjectPath(project)}:/work`, "-w", "/work",
+    "--label", `reaper.project=${project}`, POD_IMAGE
+  ]);
+  const created = await inspectContainer(project);
+  if (!created.exists || !created.running || !created.ip) {
+    throw new Error(`new pod ${podName(project)} did not start on its private network`);
+  }
+  validateImmutableConfiguration(project, created.data);
+  assertMutableConfiguration(created.data);
+  if (created.legacySecurity) throw new Error(`new pod ${podName(project)} is missing required security flags`);
+  return created;
+}
+
+// Tear down a running pod so its name is free for recreation. A pod mid-flight
+// can hold many processes (agents, tmux, node); stopping first lets the
+// entrypoint's SIGTERM handling retire them promptly instead of forcing dockerd
+// into its 10s kill timeout, which is what wedges removal.
+async function removePodContainer(project) {
+  const name = podName(project);
+  await docker(["stop", "-t", String(POD_STOP_GRACE_SECONDS), name], {
+    allowFailure: true,
+    timeoutMs: POD_REMOVAL_TIMEOUT_MS
+  });
+  const removed = await docker(["rm", "-f", name], {
+    allowFailure: true,
+    timeoutMs: POD_REMOVAL_TIMEOUT_MS
+  });
+  if (removed.code !== 0) {
+    const detail = (removed.stderr || removed.stdout || "").trim() || `exit code ${removed.code}`;
+    throw new Error(`docker rm -f ${name} failed: ${detail}`);
+  }
+  const after = await inspectContainer(project);
+  if (after.exists) throw new Error(`pod ${name} still exists after docker rm -f`);
+}
+
 export async function ensurePod(project, projectPath) {
   validateProjectName(project);
   validateProjectPath(project, projectPath);
@@ -577,6 +629,20 @@ export async function ensurePod(project, projectPath) {
         if (networks.length !== 1 || networks[0] !== podNetworkName(project) || !existing.ip) {
           throw new Error(`legacy pod ${podName(project)} is not exclusively isolated`);
         }
+        console.warn(
+          `[reaper] recreating legacy pod ${podName(project)}: it predates the current pod security `
+          + "configuration (privileged, for nested containers), which cannot be applied to a running "
+          + "container. Files under /work are preserved; processes, tmux sessions, and anything "
+          + "installed into the container filesystem outside /work (apt/npm/pip) are lost."
+        );
+        await removePodContainer(project);
+        existing = await createPodContainer(project);
+        return {
+          name: podName(project),
+          ip: existing.ip,
+          generation: existing.data?.Id || null,
+          legacySecurity: false
+        };
       }
       return {
         name: podName(project),
@@ -585,22 +651,7 @@ export async function ensurePod(project, projectPath) {
         legacySecurity: existing.legacySecurity
       };
     }
-    await docker([
-      "run", "-d", "--name", podName(project), "--restart", "unless-stopped",
-      "--memory", POD_MEMORY_LIMIT, "--memory-swap", POD_MEMORY_SWAP,
-      "--cpus", POD_CPU_LIMIT, "--pids-limit", POD_PIDS_LIMIT,
-      "--privileged",
-      "--network", podNetworkName(project), "--hostname", podName(project).slice("reaper-pod-".length),
-      "-v", `${hostProjectPath(project)}:/work`, "-w", "/work",
-      "--label", `reaper.project=${project}`, POD_IMAGE
-    ]);
-    const created = await inspectContainer(project);
-    if (!created.exists || !created.running || !created.ip) {
-      throw new Error(`new pod ${podName(project)} did not start on its private network`);
-    }
-    validateImmutableConfiguration(project, created.data);
-    assertMutableConfiguration(created.data);
-    if (created.legacySecurity) throw new Error(`new pod ${podName(project)} is missing required security flags`);
+    const created = await createPodContainer(project);
     return {
       name: podName(project),
       ip: created.ip,
@@ -640,12 +691,18 @@ export function podExecPty(project, argv, { cols, rows }) {
   if (!Number.isInteger(cols) || cols < 1 || !Number.isInteger(rows) || rows < 1) {
     throw new TypeError("PTY dimensions must be positive integers");
   }
+  // `docker exec -t` copies TERM from the CLI's environment. Passing
+  // `process.env` unchanged clobbered the pty's own terminal name, so the
+  // service's empty TERM reached the container and tmux saw the viewer as
+  // plain `xterm` -- dropping every capability keyed on `xterm-256color`
+  // (truecolor, RGB). Set it explicitly so the capability contract applies.
+  const name = "xterm-256color";
   return runtime.ptySpawn("docker", ["exec", "-it", podName(project), ...argv], {
-    name: "xterm-256color",
+    name,
     cols,
     rows,
     cwd: runtime.projectsRoot,
-    env: process.env
+    env: { ...process.env, TERM: name }
   });
 }
 
