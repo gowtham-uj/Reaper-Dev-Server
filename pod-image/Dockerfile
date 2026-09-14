@@ -5,6 +5,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LC_ALL=en_US.UTF-8 \
     BUN_INSTALL=/usr/local
 
+# Claude Code is pinned deliberately. 2.1.238 and later reject the cloud proxy's
+# custom model ids with `[claude-code:unrecognized_model]`, which breaks the whole
+# curated picker (deepseek-v4.1-flash, gpt-5.6-*, daybreak-blue). 2.1.223 is the
+# newest release that still accepts them; DISABLE_AUTOUPDATER=1 in the canonical
+# Claude setup keeps running pods from drifting past it.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
     bash zsh tmux tini git git-lfs curl wget ca-certificates \
@@ -18,7 +23,7 @@ RUN apt-get update \
  && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
  && curl -fsSL https://deb.nodesource.com/setup_current.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
- && npm install -g corepack@latest opencode-ai@latest @anthropic-ai/claude-code@2.1.212 \
+ && npm install -g corepack@latest opencode-ai@latest @anthropic-ai/claude-code@2.1.223 \
  && corepack enable \
  && curl -fsSL https://bun.sh/install | bash \
  && bun --version \
