@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="620" viewBox="0 0 1400 620">
+  <defs>
+    <style>
+      .bg{fill:#000}
+      .box{fill:#050505;stroke:#3f3f46;stroke-width:1.5}
+      .boxA{fill:#050505;stroke:#06b6d4;stroke-width:1.5}
+      .t{font-family:Inter,Segoe UI,Arial,sans-serif;fill:#f4f4f5}
+      .m{font-family:Inter,Segoe UI,Arial,sans-serif;fill:#a1a1aa}
+      .line{stroke:#52525b;stroke-width:2;fill:none;marker-end:url(#arrow)}
+      .lineA{stroke:#06b6d4;stroke-width:2;fill:none;marker-end:url(#arrowA)}
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0 0 L0 6 L9 3 z" fill="#52525b"/></marker>
+    <marker id="arrowA" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0 0 L0 6 L9 3 z" fill="#06b6d4"/></marker>
+  </defs>
+  <rect width="1400" height="620" class="bg"/>
+  <text x="60" y="70" class="t" font-size="34" font-weight="700">Reaper Dev Server</text>
+  <text x="60" y="106" class="m" font-size="18">The browser can disconnect. The project container and terminal session keep running.</text>
+
+  <rect x="75" y="230" width="185" height="105" rx="10" class="box"/>
+  <text x="167" y="272" text-anchor="middle" class="t" font-size="20" font-weight="600">Browser client</text>
+  <text x="167" y="302" text-anchor="middle" class="m" font-size="14">terminal, files, settings</text>
+
+  <rect x="345" y="230" width="185" height="105" rx="10" class="box"/>
+  <text x="437" y="272" text-anchor="middle" class="t" font-size="20" font-weight="600">Caddy</text>
+  <text x="437" y="302" text-anchor="middle" class="m" font-size="14">HTTPS + routing</text>
+
+  <rect x="615" y="200" width="235" height="165" rx="10" class="boxA"/>
+  <text x="732" y="242" text-anchor="middle" class="t" font-size="21" font-weight="600">Node.js backend</text>
+  <text x="732" y="277" text-anchor="middle" class="m" font-size="14">auth + tokens</text>
+  <text x="732" y="304" text-anchor="middle" class="m" font-size="14">files + terminal control</text>
+  <text x="732" y="331" text-anchor="middle" class="m" font-size="14">published-port routes</text>
+
+  <rect x="980" y="175" width="300" height="215" rx="10" class="box"/>
+  <text x="1130" y="220" text-anchor="middle" class="t" font-size="22" font-weight="600">Project container</text>
+  <text x="1130" y="257" text-anchor="middle" class="m" font-size="14">/work</text>
+  <text x="1130" y="284" text-anchor="middle" class="m" font-size="14">tmux: main</text>
+  <text x="1130" y="311" text-anchor="middle" class="m" font-size="14">named tmux sessions</text>
+  <text x="1130" y="338" text-anchor="middle" class="m" font-size="14">long-running processes</text>
+
+  <path d="M260 282 H345" class="lineA"/>
+  <path d="M530 282 H615" class="line"/>
+  <path d="M850 282 H980" class="lineA"/>
+
+  <path d="M1130 390 V475" class="line"/>
+  <rect x="980" y="475" width="300" height="85" rx="10" class="box"/>
+  <text x="1130" y="510" text-anchor="middle" class="t" font-size="18" font-weight="600">Persistence boundary</text>
+  <text x="1130" y="538" text-anchor="middle" class="m" font-size="13">backend restart does not kill this container</text>
+
+  <text x="75" y="520" class="m" font-size="15">Disconnect = detach. Reconnect = replay captured output, then attach to the same tmux session.</text>
+</svg>
