@@ -16,29 +16,7 @@ Closing a tab only detaches the viewer. Reopening the project attaches to the sa
 
 ## Runtime model
 
-```text
-browser
-   |
-   | HTTPS / WebSocket
-   v
- Caddy
-   |
-   v
- Node.js backend
-   |
-   +------ project files and settings
-   +------ auth, tokens, audit log
-   +------ terminal control
-   +------ published-port routes
-   |
-   v
- one Docker container per project
-   |
-   +------ /work
-   +------ tmux session: main
-   +------ optional named tmux sessions
-   +------ project processes
-```
+![Reaper Dev Server runtime](docs/screenshots/readme-runtime.svg)
 
 Each visible workspace directory maps to one project. In production, each project gets a dedicated `reaper-pod-*` Docker container. The project directory is mounted at `/work`.
 
