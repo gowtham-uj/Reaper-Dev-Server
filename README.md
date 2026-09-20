@@ -1,9 +1,69 @@
 # Reaper Dev Server
 
-A self-hosted dev server for the agentic era - one durable Linux pod per
-project, persistent terminals, scoped tokens, and authenticated published
-ports. Files, env, and shells survive browser restarts, network drops, and
-backend redeploys.
+Reaper Dev Server gives each project its own long-lived Linux container and persistent terminal sessions.
+
+A browser can disconnect, the backend can restart, or the frontend can be redeployed without killing the shell that is doing the work. Project files, environment settings, terminal sessions, and logs stay with the project.
+
+The server also exposes project files, scoped API tokens, audit logs, and authenticated routes for ports published from a project container.
+
+## What problem it solves
+
+A normal web terminal is often tied to the browser connection or the web server process. That is a bad fit for coding agents and long development jobs. A build, dev server, test run, or TUI may need to keep running for hours while clients come and go.
+
+Reaper Dev Server keeps that runtime state in the project container and `tmux`, not in the browser.
+
+Closing a tab only detaches the viewer. Reopening the project attaches to the same terminal session and replays captured output before live output resumes.
+
+## Runtime model
+
+```text
+browser
+   |
+   | HTTPS / WebSocket
+   v
+ Caddy
+   |
+   v
+ Node.js backend
+   |
+   +------ project files and settings
+   +------ auth, tokens, audit log
+   +------ terminal control
+   +------ published-port routes
+   |
+   v
+ one Docker container per project
+   |
+   +------ /work
+   +------ tmux session: main
+   +------ optional named tmux sessions
+   +------ project processes
+```
+
+Each visible workspace directory maps to one project. In production, each project gets a dedicated `reaper-pod-*` Docker container. The project directory is mounted at `/work`.
+
+Terminal sessions run inside that container. Multiple viewers can attach to the same session. A disconnect does not send `exit`, `Ctrl-C`, or `Ctrl-D`.
+
+## Persistence boundary
+
+The project container is the persistence boundary.
+
+Backend and frontend deployments leave project containers alone. That preserves running shells and processes across control-plane restarts.
+
+Restarting or deleting the project container is different. In-memory processes die with it. Reaper Dev Server recreates declared terminal sessions, but it does not pretend it can restore arbitrary PIDs, sockets, process memory, or TUI state.
+
+That distinction matters because the project promises terminal persistence, not process checkpointing.
+
+## Trust boundary
+
+The backend runs as root and can access the Docker daemon socket. Treat it as host-level infrastructure.
+
+Project containers isolate workspaces from one another and enforce resource and network rules, but this is not a hostile multi-tenant sandbox. Do not give untrusted users accounts on the same host.
+
+## Related projects
+
+- [ReaperCode](https://github.com/gowtham-uj/ReaperCode) is the coding-agent runtime that can use a development environment like this.
+- [Themis](https://github.com/gowtham-uj/Themis) evaluates coding-agent runs and analyzes repeated failures across eval campaigns.
 
 ## UI tour
 
